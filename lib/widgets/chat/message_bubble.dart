@@ -13,6 +13,7 @@ class MessageBubble extends StatefulWidget {
   final MessageModel message;
   final bool isMyMessage;
   final bool showAvatar;
+  final bool showReadStatus; // NEW: Added parameter for read status
   final VoidCallback? onLongPress;
   final VoidCallback? onTap;
 
@@ -21,6 +22,7 @@ class MessageBubble extends StatefulWidget {
     required this.message,
     required this.isMyMessage,
     this.showAvatar = true,
+    this.showReadStatus = false, // NEW: Default value
     this.onLongPress,
     this.onTap,
   });
@@ -298,6 +300,7 @@ class _MessageBubbleState extends State<MessageBubble>
     );
   }
 
+  // ENHANCED: Message info with optional read status
   Widget _buildMessageInfo() {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 4),
@@ -309,11 +312,13 @@ class _MessageBubbleState extends State<MessageBubble>
             style: AppThemes.timestampTextStyle,
           ),
 
-          if (widget.isMyMessage) ...[
+          // Show read status for own messages when enabled
+          if (widget.isMyMessage && widget.showReadStatus) ...[
             const SizedBox(width: 4),
             StatusIndicator(
               isDelivered: widget.message.isDelivered,
               isRead: widget.message.isRead,
+              animate: true,
             ),
           ],
         ],

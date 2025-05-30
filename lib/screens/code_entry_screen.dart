@@ -117,12 +117,12 @@ class _CodeEntryScreenState extends ConsumerState<CodeEntryScreen>
     });
   }
 
-  void _onCodeDeleted(int index) {
-    if (index > 0) {
-      _controllers[index - 1].clear();
-      _focusNodes[index - 1].requestFocus();
-    }
-  }
+  // void _onCodeDeleted(int index) {
+  //   if (index > 0) {
+  //     _controllers[index - 1].clear();
+  //     _focusNodes[index - 1].requestFocus();
+  //   }
+  // }
 
   Future<void> _connectWithCode() async {
     if (!_isCodeComplete) return;

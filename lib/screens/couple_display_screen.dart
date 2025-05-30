@@ -1,3 +1,6 @@
+import 'dart:async';
+
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -36,6 +39,9 @@ class _CodeDisplayScreenState extends ConsumerState<CodeDisplayScreen>
   bool _isWaitingForPartner = true;
   String? _partnerId;
 
+  // Add stream subscription for real-time updates
+  StreamSubscription<DocumentSnapshot>? _userConnectionSubscription;
+
   @override
   void initState() {
     super.initState();
@@ -69,14 +75,13 @@ class _CodeDisplayScreenState extends ConsumerState<CodeDisplayScreen>
     );
 
     _startAnimations();
-    _listenForPartnerConnection();
+    _setupConnectionListener(); // Updated method name
   }
 
   final TextEditingController _codeInputController = TextEditingController();
   bool _isEnteringCode = false;
   bool _isProcessingCode = false;
 
-  // Add this method to _CodeDisplayScreenState class
   void _toggleCodeInput() {
     setState(() {
       _isEnteringCode = !_isEnteringCode;
@@ -86,7 +91,7 @@ class _CodeDisplayScreenState extends ConsumerState<CodeDisplayScreen>
     });
   }
 
-  // Add this method to _CodeDisplayScreenState class
+  // Enhanced code submission with immediate UI update
   Future<void> _submitEnteredCode() async {
     final enteredCode = _codeInputController.text.trim();
 
@@ -112,20 +117,34 @@ class _CodeDisplayScreenState extends ConsumerState<CodeDisplayScreen>
         return;
       }
 
+      print('🔍 Submitting code: $enteredCode for user: $currentUserId');
+
       final result = await CoupleCodeService.instance.useCoupleCode(
         enteredCode,
         currentUserId,
       );
 
-      if (result.isSuccess) {
+      if (result.isSuccess && result.partnerId != null) {
+        print('✅ Code submission successful! Partner ID: ${result.partnerId}');
+
+        // Immediately update UI state
+        setState(() {
+          _isWaitingForPartner = false;
+          _partnerId = result.partnerId;
+          _isEnteringCode = false;
+        });
+
         _showSnackBar('Successfully connected! 🎉');
-        _onPartnerConnected();
+
+        // Initialize chat and navigate
+        await _initializeChatAndNavigate();
       } else {
+        print('❌ Code submission failed: ${result.message}');
         _showSnackBar(result.message);
       }
     } catch (e) {
-      _showSnackBar('Failed to connect. Please try again.');
       print('❌ Error submitting code: $e');
+      _showSnackBar('Failed to connect. Please try again.');
     } finally {
       setState(() {
         _isProcessingCode = false;
@@ -139,52 +158,104 @@ class _CodeDisplayScreenState extends ConsumerState<CodeDisplayScreen>
     _pulseController.repeat(reverse: true);
   }
 
- // In code_display_screen.dart, update the _listenForPartnerConnection method:
-void _listenForPartnerConnection() {
-  final currentUserId = ref.read(authControllerProvider.notifier).currentUserId;
-  if (currentUserId == null) return;
+  // Enhanced connection listener with better error handling
+  void _setupConnectionListener() {
+    final currentUserId =
+        ref.read(authControllerProvider.notifier).currentUserId;
+    if (currentUserId == null) {
+      print('❌ No current user ID available');
+      return;
+    }
 
-  // Listen for changes in user's document
-  FirebaseService.usersCollection.doc(currentUserId).snapshots().listen((snapshot) {
+    print('📡 Setting up connection listener for user: $currentUserId');
+
+    // Listen for real-time changes in user's document
+    _userConnectionSubscription = FirebaseService.usersCollection
+        .doc(currentUserId)
+        .snapshots()
+        .listen(
+          (snapshot) {
+            if (!mounted) return;
+
+            print('📋 User document snapshot received');
+
+            if (snapshot.exists) {
+              final userData = snapshot.data() as Map<String, dynamic>;
+              final isConnected = userData['isConnected'] as bool? ?? false;
+              final partnerId = userData['partnerId'] as String?;
+
+              print(
+                '📋 Connection status - isConnected: $isConnected, partnerId: $partnerId, currentState: $_isWaitingForPartner',
+              );
+
+              // Check if user just got connected and we're still waiting
+              if (isConnected && partnerId != null && _isWaitingForPartner) {
+                print('✅ Partner connected detected! Partner ID: $partnerId');
+
+                setState(() {
+                  _isWaitingForPartner = false;
+                  _partnerId = partnerId;
+                });
+
+                // Initialize chat and navigate
+                _initializeChatAndNavigate();
+              }
+            } else {
+              print('⚠️ User document does not exist');
+            }
+          },
+          onError: (error) {
+            print('❌ Error in connection listener: $error');
+          },
+        );
+  }
+
+  // New method to handle chat initialization and navigation
+  Future<void> _initializeChatAndNavigate() async {
     if (!mounted) return;
-    
-    if (snapshot.exists) {
-      final userData = snapshot.data() as Map<String, dynamic>;
-      final isConnected = userData['isConnected'] as bool? ?? false;
-      final partnerId = userData['partnerId'] as String?;
-      
-      print('📋 Connection status update - isConnected: $isConnected, partnerId: $partnerId');
-      
-      // Check if user just got connected
-      if (isConnected && partnerId != null && _isWaitingForPartner) {
-        print('✅ Partner connected! Partner ID: $partnerId');
-        _partnerId = partnerId;
-        _onPartnerConnected();
-      }
-    }
-  });
-}
 
-  // In code_display_screen.dart:
-void _onPartnerConnected() {
-  if (!mounted) return;
-  
-  setState(() => _isWaitingForPartner = false);
-  
-  // Initialize chat service before showing success dialog
-  ChatService.instance.initializeChatWithFallback().then((chatId) {
-    if (chatId != null) {
-      print('✅ Chat initialized: $chatId');
-      // Show success animation
-      _showConnectionSuccessDialog();
-    } else {
-      print('❌ Failed to initialize chat after connection');
-      _showSnackBar('Connected but failed to initialize chat. Please try again.');
+    try {
+      print('🔍 Initializing chat for connected users...');
+
+      // Initialize chat service
+      final chatId = await ChatService.instance.initializeChatWithFallback();
+
+      if (chatId != null) {
+        print('✅ Chat initialized successfully: $chatId');
+
+        // Show success dialog
+        _showConnectionSuccessDialog();
+      } else {
+        print('❌ Failed to initialize chat after connection');
+        _showSnackBar(
+          'Connected but failed to initialize chat. Please try again.',
+        );
+
+        // Still try to navigate to chat screen as connection was successful
+        Future.delayed(const Duration(seconds: 2), () {
+          if (mounted) {
+            _navigateToChat();
+          }
+        });
+      }
+    } catch (e) {
+      print('❌ Error initializing chat: $e');
+      _showSnackBar(
+        'Connected but chat initialization failed. Navigating anyway...',
+      );
+
+      // Navigate anyway as connection was successful
+      Future.delayed(const Duration(seconds: 1), () {
+        if (mounted) {
+          _navigateToChat();
+        }
+      });
     }
-  });
-}
+  }
 
   void _showConnectionSuccessDialog() {
+    if (!mounted) return;
+
     showDialog(
       context: context,
       barrierDismissible: false,
@@ -199,6 +270,8 @@ void _onPartnerConnected() {
   }
 
   void _navigateToChat() {
+    if (!mounted) return;
+
     Navigator.of(context).pushReplacement(
       PageRouteBuilder(
         pageBuilder:
@@ -266,6 +339,8 @@ Download: [App Store Link] | [Google Play Link]''';
   }
 
   void _showSnackBar(String message) {
+    if (!mounted) return;
+
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(message),
@@ -278,6 +353,7 @@ Download: [App Store Link] | [Google Play Link]''';
 
   @override
   void dispose() {
+    _userConnectionSubscription?.cancel(); // Cancel subscription
     _codeController.dispose();
     _heartController.dispose();
     _pulseController.dispose();
@@ -380,7 +456,7 @@ Download: [App Store Link] | [Google Play Link]''';
 
                       const SizedBox(height: 32),
 
-                      // Title
+                      // Title - Updated to show connection status
                       FadeTransition(
                         opacity: _codeOpacityAnimation,
                         child: Text(
@@ -513,20 +589,11 @@ Download: [App Store Link] | [Google Play Link]''';
 
                                 const SizedBox(height: 16),
 
-                                // Enter code button
+                                // Enter code button - Updated to use inline input
                                 SizedBox(
                                   width: double.infinity,
                                   child: ElevatedButton.icon(
-                                    onPressed: () {
-                                      Navigator.push(
-                                        context,
-                                        MaterialPageRoute(
-                                          builder:
-                                              (context) =>
-                                                  const CodeEntryScreen(),
-                                        ),
-                                      );
-                                    },
+                                    onPressed: _toggleCodeInput,
                                     icon: const Icon(Icons.keyboard),
                                     label: const Text('Enter Partner\'s Code'),
                                     style: ElevatedButton.styleFrom(
@@ -813,65 +880,70 @@ Download: [App Store Link] | [Google Play Link]''';
                             ),
                           ),
                         ),
+                      ] else ...[
+                        // Connection successful state
+                        FadeTransition(
+                          opacity: _codeOpacityAnimation,
+                          child: Column(
+                            children: [
+                              Container(
+                                padding: const EdgeInsets.all(32),
+                                decoration: BoxDecoration(
+                                  gradient: LinearGradient(
+                                    colors: [
+                                      AppColors.primaryDeepRose.withOpacity(
+                                        0.1,
+                                      ),
+                                      AppColors.secondaryDeepPurple.withOpacity(
+                                        0.1,
+                                      ),
+                                    ],
+                                  ),
+                                  borderRadius: BorderRadius.circular(20),
+                                  border: Border.all(
+                                    color: AppColors.primaryDeepRose
+                                        .withOpacity(0.3),
+                                    width: 2,
+                                  ),
+                                ),
+                                child: Column(
+                                  children: [
+                                    const Icon(
+                                      Icons.favorite,
+                                      size: 60,
+                                      color: AppColors.primaryDeepRose,
+                                    ),
+                                    const SizedBox(height: 16),
+                                    Text(
+                                      'Hearts Connected! 💕',
+                                      style: Theme.of(
+                                        context,
+                                      ).textTheme.headlineSmall?.copyWith(
+                                        fontWeight: FontWeight.bold,
+                                        color: AppColors.primaryDeepRose,
+                                      ),
+                                      textAlign: TextAlign.center,
+                                    ),
+                                    const SizedBox(height: 8),
+                                    Text(
+                                      'Preparing your chat...',
+                                      style: Theme.of(
+                                        context,
+                                      ).textTheme.bodyMedium?.copyWith(
+                                        color: AppColors.textSecondary,
+                                      ),
+                                      textAlign: TextAlign.center,
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
                       ],
                     ],
                   ),
                 ),
-
-                // // Instructions
-                // if (_isWaitingForPartner)
-                //   FadeTransition(
-                //     opacity: _codeOpacityAnimation,
-                //     child: Container(
-                //       padding: const EdgeInsets.all(12),
-                //       decoration: BoxDecoration(
-                //         color: Colors.white.withOpacity(0.1),
-                //         borderRadius: BorderRadius.circular(12),
-                //       ),
-                //       child: Column(
-                //         children: [
-                //           Row(
-                //             children: [
-                //               Container(
-                //                 padding: const EdgeInsets.all(6),
-                //                 decoration: BoxDecoration(
-                //                   color: AppColors.accentDeepGold.withOpacity(
-                //                     0.2,
-                //                   ),
-                //                   borderRadius: BorderRadius.circular(6),
-                //                 ),
-                //                 child: const Icon(
-                //                   Icons.info_outline,
-                //                   color: AppColors.accentDeepGold,
-                //                   size: 16,
-                //                 ),
-                //               ),
-                //               const SizedBox(width: 8),
-                //               const Text(
-                //                 'How it works:',
-                //                 style: TextStyle(
-                //                   fontWeight: FontWeight.w600,
-                //                   color: AppColors.textPrimary,
-                //                 ),
-                //               ),
-                //             ],
-                //           ),
-                //           const SizedBox(height: 8),
-                //           const Text(
-                //             '1. Share your code with your partner\n'
-                //             '2. They download OnlyUs and enter the code\n'
-                //             '3. You\'ll both be connected instantly!\n'
-                //             '4. Start your beautiful conversation 💕',
-                //             style: TextStyle(
-                //               color: AppColors.textSecondary,
-                //               fontSize: 12,
-                //               height: 1.4,
-                //             ),
-                //           ),
-                //         ],
-                //       ),
-                //     ),
-                //   ),
               ],
             ),
           ),
@@ -881,7 +953,7 @@ Download: [App Store Link] | [Google Play Link]''';
   }
 }
 
-// Connection success dialog
+// Connection success dialog (unchanged)
 class _ConnectionSuccessDialog extends StatefulWidget {
   final VoidCallback onContinue;
 

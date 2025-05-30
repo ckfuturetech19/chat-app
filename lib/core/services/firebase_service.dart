@@ -120,7 +120,9 @@ class FirebaseService {
   }
 
   // Get user stream with real-time presence data
-  static Stream<DocumentSnapshot<Map<String, dynamic>>> getUserStream(String userId) {
+  static Stream<DocumentSnapshot<Map<String, dynamic>>> getUserStream(
+    String userId,
+  ) {
     return usersCollection.doc(userId).snapshots();
   }
 
@@ -262,113 +264,148 @@ class FirebaseService {
 
   // Enhanced send message with better real-time support
   static Future<void> sendMessage({
-  required String chatId,
-  required String message,
-  String? imageUrl,
-  required String senderId,
-  required String senderName,
-  String? messageId,
-}) async {
-  try {
-    print('🔍 FirebaseService.sendMessage starting...');
-    print('📋 Chat ID: $chatId');
-    print('📋 Sender ID: $senderId');
-    
-    // First, verify the chat exists
-    final chatDoc = await chatsCollection.doc(chatId).get();
-    if (!chatDoc.exists) {
-      print('❌ Chat document does not exist: $chatId');
-      throw Exception('Chat does not exist');
+    required String chatId,
+    required String message,
+    String? imageUrl,
+    required String senderId,
+    required String senderName,
+    String? messageId,
+  }) async {
+    try {
+      print('🔍 FirebaseService.sendMessage starting...');
+      print('📋 Chat ID: $chatId');
+      print('📋 Sender ID: $senderId');
+
+      // First, verify the chat exists
+      final chatDoc = await chatsCollection.doc(chatId).get();
+      if (!chatDoc.exists) {
+        print('❌ Chat document does not exist: $chatId');
+        throw Exception('Chat does not exist');
+      }
+      print('✅ Chat document exists');
+
+      // Verify user is a participant
+      final chatData = chatDoc.data() as Map<String, dynamic>;
+      final participants = List<String>.from(chatData['participants'] ?? []);
+      if (!participants.contains(senderId)) {
+        print('❌ User $senderId is not a participant in chat $chatId');
+        print('📋 Participants: $participants');
+        throw Exception('User is not a participant in this chat');
+      }
+      print('✅ User is a participant');
+
+      final docId = messageId ?? generateMessageId();
+
+      final messageData = {
+        'id': docId,
+        'chatId': chatId,
+        'message': message,
+        'imageUrl': imageUrl,
+        'senderId': senderId,
+        'senderName': senderName,
+        'timestamp': FieldValue.serverTimestamp(),
+        'isRead': false,
+        'isDelivered': true,
+        'deliveryStatus': 'sent',
+        'type': imageUrl != null ? 'image' : 'text',
+        'reactions': {},
+        'editedAt': null,
+        'isDeleted': false,
+      };
+
+      print('🔍 Creating message document...');
+      // Add message to messages collection with specific ID
+      await messagesCollection.doc(docId).set(messageData);
+      print('✅ Message document created');
+
+      print('🔍 Updating chat room...');
+      // Update chat room with last message info and increment message count
+      await chatsCollection.doc(chatId).update({
+        'lastMessage': imageUrl != null ? '📷 Photo' : message,
+        'lastMessageTime': FieldValue.serverTimestamp(),
+        'lastMessageSender': senderName,
+        'lastMessageSenderId': senderId,
+        'updatedAt': FieldValue.serverTimestamp(),
+        'messageCount': FieldValue.increment(1),
+      });
+      print('✅ Chat room updated');
+
+      print('✅ Message sent successfully with ID: $docId');
+    } catch (e, stackTrace) {
+      print('❌ Error in FirebaseService.sendMessage: $e');
+      print('📋 Stack trace: $stackTrace');
+      rethrow;
     }
-    print('✅ Chat document exists');
-    
-    // Verify user is a participant
-    final chatData = chatDoc.data() as Map<String, dynamic>;
-    final participants = List<String>.from(chatData['participants'] ?? []);
-    if (!participants.contains(senderId)) {
-      print('❌ User $senderId is not a participant in chat $chatId');
-      print('📋 Participants: $participants');
-      throw Exception('User is not a participant in this chat');
-    }
-    print('✅ User is a participant');
-    
-    final docId = messageId ?? generateMessageId();
-    
-    final messageData = {
-      'id': docId,
-      'chatId': chatId,
-      'message': message,
-      'imageUrl': imageUrl,
-      'senderId': senderId,
-      'senderName': senderName,
-      'timestamp': FieldValue.serverTimestamp(),
-      'isRead': false,
-      'isDelivered': true,
-      'deliveryStatus': 'sent',
-      'type': imageUrl != null ? 'image' : 'text',
-      'reactions': {},
-      'editedAt': null,
-      'isDeleted': false,
-    };
-
-    print('🔍 Creating message document...');
-    // Add message to messages collection with specific ID
-    await messagesCollection.doc(docId).set(messageData);
-    print('✅ Message document created');
-
-    print('🔍 Updating chat room...');
-    // Update chat room with last message info and increment message count
-    await chatsCollection.doc(chatId).update({
-      'lastMessage': imageUrl != null ? '📷 Photo' : message,
-      'lastMessageTime': FieldValue.serverTimestamp(),
-      'lastMessageSender': senderName,
-      'lastMessageSenderId': senderId,
-      'updatedAt': FieldValue.serverTimestamp(),
-      'messageCount': FieldValue.increment(1),
-    });
-    print('✅ Chat room updated');
-
-    print('✅ Message sent successfully with ID: $docId');
-  } catch (e, stackTrace) {
-    print('❌ Error in FirebaseService.sendMessage: $e');
-    print('📋 Stack trace: $stackTrace');
-    rethrow;
   }
-}
 
   // Mark messages as read with better batch handling
   static Future<void> markMessagesAsRead(String chatId, String userId) async {
     try {
-      final unreadMessages = await messagesCollection
-          .where('chatId', isEqualTo: chatId)
-          .where('senderId', isNotEqualTo: userId)
-          .where('isRead', isEqualTo: false)
-          .get();
+      print('🔍 Marking messages as read for chat: $chatId, user: $userId');
+
+      // OPTION 1: Simplified query (no custom index needed)
+      final unreadMessages =
+          await messagesCollection
+              .where('chatId', isEqualTo: chatId)
+              .where('isRead', isEqualTo: false)
+              .get(); // Removed the problematic senderId filter and orderBy
 
       if (unreadMessages.docs.isEmpty) {
         print('✅ No unread messages to mark');
         return;
       }
 
-      final batch = firestore.batch();
+      // Filter out current user's messages in code instead of query
+      final messagesToUpdate =
+          unreadMessages.docs.where((doc) {
+            final data = doc.data();
+            final senderId = data['senderId'] as String?;
+            return senderId != null && senderId != userId;
+          }).toList();
 
-      for (final doc in unreadMessages.docs) {
-        batch.update(doc.reference, {
-          'isRead': true,
-          'readAt': FieldValue.serverTimestamp(),
-          'readBy': userId,
-        });
+      if (messagesToUpdate.isEmpty) {
+        print('✅ No unread messages from other users');
+        return;
       }
 
-      await batch.commit();
-      print('✅ Marked ${unreadMessages.docs.length} messages as read');
+      // Update messages in batches (Firestore batch limit is 500)
+      const batchSize = 500;
+      final batches = <WriteBatch>[];
+
+      for (int i = 0; i < messagesToUpdate.length; i += batchSize) {
+        final batch = firestore.batch();
+        final end =
+            (i + batchSize < messagesToUpdate.length)
+                ? i + batchSize
+                : messagesToUpdate.length;
+
+        for (int j = i; j < end; j++) {
+          batch.update(messagesToUpdate[j].reference, {
+            'isRead': true,
+            'readAt': FieldValue.serverTimestamp(),
+            'readBy': userId,
+          });
+        }
+
+        batches.add(batch);
+      }
+
+      // Commit all batches
+      for (final batch in batches) {
+        await batch.commit();
+      }
+
+      print('✅ Marked ${messagesToUpdate.length} messages as read');
     } catch (e) {
       print('❌ Error marking messages as read: $e');
+      // Don't throw here as it's not critical for app functionality
     }
   }
 
   // Enhanced messages stream with better query optimization
-  static Stream<QuerySnapshot<Map<String, dynamic>>> getMessagesStream(String chatId) {
+  static Stream<QuerySnapshot<Map<String, dynamic>>> getMessagesStream(
+    String chatId,
+  ) {
     return messagesCollection
         .where('chatId', isEqualTo: chatId)
         .where('isDeleted', isEqualTo: false) // Exclude deleted messages
@@ -378,7 +415,9 @@ class FirebaseService {
   }
 
   // Get chat stream for typing indicators and chat metadata
-  static Stream<DocumentSnapshot<Map<String, dynamic>>> getChatStream(String chatId) {
+  static Stream<DocumentSnapshot<Map<String, dynamic>>> getChatStream(
+    String chatId,
+  ) {
     return chatsCollection.doc(chatId).snapshots();
   }
 
@@ -418,12 +457,13 @@ class FirebaseService {
   // Get unread message count for a chat
   static Future<int> getUnreadMessageCount(String chatId, String userId) async {
     try {
-      final unreadMessages = await messagesCollection
-          .where('chatId', isEqualTo: chatId)
-          .where('senderId', isNotEqualTo: userId)
-          .where('isRead', isEqualTo: false)
-          .where('isDeleted', isEqualTo: false)
-          .get();
+      final unreadMessages =
+          await messagesCollection
+              .where('chatId', isEqualTo: chatId)
+              .where('senderId', isNotEqualTo: userId)
+              .where('isRead', isEqualTo: false)
+              .where('isDeleted', isEqualTo: false)
+              .get();
 
       return unreadMessages.docs.length;
     } catch (e) {

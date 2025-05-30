@@ -81,28 +81,35 @@ class ChatController extends StateNotifier<ChatState> {
   Future<void> _initializeChat() async {
     try {
       state = ChatLoading();
+      print('🔍 ChatController: Starting chat initialization...');
 
       // Check authentication
       final currentUserId =
           _ref.read(authControllerProvider.notifier).currentUserId;
       if (currentUserId == null) {
+        print('❌ ChatController: User not authenticated');
         state = ChatError('Please log in to continue');
         return;
       }
+
+      print('✅ ChatController: User authenticated: $currentUserId');
 
       // Initialize chat with retry logic
       final chatId = await _initializeChatWithRetry();
 
       if (chatId == null) {
+        print('⚠️ ChatController: No chat available, showing empty state');
         // Show empty state for better UX
         state = ChatLoaded(messages: [], chatId: '', isConnected: false);
         return;
       }
 
       _currentChatId = chatId;
+      print('✅ ChatController: Chat initialized with ID: $chatId');
+      
       await _setupMessageStream(chatId);
     } catch (e) {
-      print('❌ Error initializing chat: $e');
+      print('❌ ChatController: Error initializing chat: $e');
       state = ChatError(
         'Failed to load chat. Please check your connection.',
         cachedMessages: _getCachedMessages(),
@@ -114,22 +121,34 @@ class ChatController extends StateNotifier<ChatState> {
   Future<String?> _initializeChatWithRetry() async {
     for (int attempt = 0; attempt < maxRetries; attempt++) {
       try {
+        print('🔍 ChatController: Chat initialization attempt ${attempt + 1}/$maxRetries');
+        
         final chatId = await _chatService.initializeChatWithFallback();
+        
+        if (chatId != null) {
+          print('✅ ChatController: Chat initialized successfully on attempt ${attempt + 1}');
+          return chatId;
+        }
+        
         if (attempt < maxRetries - 1) {
           await Future.delayed(Duration(seconds: (attempt + 1) * 2));
         }
       } catch (e) {
-        print('❌ Chat initialization attempt ${attempt + 1} failed: $e');
+        print('❌ ChatController: Chat initialization attempt ${attempt + 1} failed: $e');
         if (attempt < maxRetries - 1) {
           await Future.delayed(Duration(seconds: (attempt + 1) * 2));
         }
       }
     }
+    
+    print('❌ ChatController: All chat initialization attempts failed');
     return null;
   }
 
   Future<void> _setupMessageStream(String chatId) async {
     try {
+      print('📡 ChatController: Setting up message stream for chat: $chatId');
+      
       // Cancel any existing subscription
       await _messagesSubscription?.cancel();
 
@@ -138,24 +157,21 @@ class ChatController extends StateNotifier<ChatState> {
           .getMessagesStream(chatId: chatId)
           .listen(
             (messages) {
-              print(
-                '✅ Received ${messages.length} messages for real-time update',
-              );
+              print('✅ ChatController: Received ${messages.length} messages for real-time update');
 
               // Always update state with new messages for real-time updates
               final currentState = state;
 
               if (currentState is ChatSendingMessage) {
                 // Check if our pending message was confirmed
-                final messageTexts =
-                    messages
-                        .map((m) => m.message.toLowerCase().trim())
-                        .toList();
-                final pendingText =
-                    currentState.pendingMessage.toLowerCase().trim();
+                final messageTexts = messages
+                    .map((m) => m.message.toLowerCase().trim())
+                    .toList();
+                final pendingText = currentState.pendingMessage.toLowerCase().trim();
 
                 // If we find our pending message, switch to loaded state
                 if (messageTexts.contains(pendingText)) {
+                  print('✅ ChatController: Pending message confirmed, switching to loaded state');
                   state = ChatLoaded(
                     messages: messages,
                     chatId: chatId,
@@ -182,7 +198,7 @@ class ChatController extends StateNotifier<ChatState> {
               _cacheMessages(chatId, messages);
             },
             onError: (error) {
-              print('❌ Messages stream error: $error');
+              print('❌ ChatController: Messages stream error: $error');
 
               // Handle different types of errors
               final errorString = error.toString().toLowerCase();
@@ -190,9 +206,7 @@ class ChatController extends StateNotifier<ChatState> {
               if (errorString.contains('failed-precondition') ||
                   errorString.contains('requires an index') ||
                   errorString.contains('index')) {
-                print(
-                  '⚠️ Firestore index error - please create required indexes',
-                );
+                print('⚠️ ChatController: Firestore index error - using cached messages');
 
                 // Show cached messages with warning
                 final cachedMessages = _getCachedMessages();
@@ -201,7 +215,13 @@ class ChatController extends StateNotifier<ChatState> {
                   chatId: chatId,
                   isConnected: false,
                 );
-                return; // Don't retry for index errors
+                
+                // Try to refresh the stream with a simpler query
+                Timer(const Duration(seconds: 2), () {
+                  _chatService.refreshMessagesStream(chatId: chatId);
+                });
+                
+                return; // Don't retry for index errors immediately
               }
 
               // For other errors, show cached messages and retry
@@ -216,8 +236,10 @@ class ChatController extends StateNotifier<ChatState> {
               _scheduleRetry();
             },
           );
+          
+      print('✅ ChatController: Message stream setup completed');
     } catch (e) {
-      print('❌ Error setting up message stream: $e');
+      print('❌ ChatController: Error setting up message stream: $e');
       throw e;
     }
   }
@@ -226,6 +248,8 @@ class ChatController extends StateNotifier<ChatState> {
     if (message.trim().isEmpty) return;
 
     try {
+      print('📤 ChatController: Sending message: ${message.trim()}');
+      
       final currentState = state;
       String chatId = _currentChatId ?? '';
       List<MessageModel> currentMessages = [];
@@ -256,6 +280,7 @@ class ChatController extends StateNotifier<ChatState> {
       );
 
       if (!success) {
+        print('❌ ChatController: Failed to send message');
         // Revert to previous state on failure
         state = ChatLoaded(
           messages: currentMessages,
@@ -266,10 +291,11 @@ class ChatController extends StateNotifier<ChatState> {
         throw Exception('Failed to send message');
       }
 
+      print('✅ ChatController: Message sent successfully');
       // Don't manually update state here - let the real-time stream handle it
       // The stream will automatically update when the message is confirmed from Firebase
     } catch (e) {
-      print('❌ Error sending message: $e');
+      print('❌ ChatController: Error sending message: $e');
 
       // Revert to loaded state with error indication
       final currentState = state;
@@ -287,6 +313,8 @@ class ChatController extends StateNotifier<ChatState> {
 
   Future<void> sendImageMessage(String imageUrl, {String? caption}) async {
     try {
+      print('📤 ChatController: Sending image message');
+      
       final currentState = state;
       String chatId = _currentChatId ?? '';
       List<MessageModel> currentMessages = [];
@@ -318,9 +346,10 @@ class ChatController extends StateNotifier<ChatState> {
         throw Exception('Failed to send image');
       }
 
+      print('✅ ChatController: Image message sent successfully');
       // Real-time stream will handle the update
     } catch (e) {
-      print('❌ Error sending image: $e');
+      print('❌ ChatController: Error sending image: $e');
       rethrow;
     }
   }
@@ -339,7 +368,7 @@ class ChatController extends StateNotifier<ChatState> {
         });
       }
     } catch (e) {
-      print('❌ Error updating typing status: $e');
+      print('❌ ChatController: Error updating typing status: $e');
       // Don't throw here as it's not critical
     }
   }
@@ -348,7 +377,7 @@ class ChatController extends StateNotifier<ChatState> {
     try {
       await _chatService.markMessagesAsRead(chatId: _currentChatId);
     } catch (e) {
-      print('❌ Error marking messages as read: $e');
+      print('❌ ChatController: Error marking messages as read: $e');
       // Don't throw here as it's not critical
     }
   }
@@ -358,15 +387,30 @@ class ChatController extends StateNotifier<ChatState> {
       await _chatService.deleteMessage(messageId);
       // Real-time stream will handle the update
     } catch (e) {
-      print('❌ Error deleting message: $e');
+      print('❌ ChatController: Error deleting message: $e');
       rethrow;
     }
   }
 
   void retry() {
+    print('🔄 ChatController: Manual retry triggered');
     _retryCount = 0;
     _retryTimer?.cancel();
     _initializeChat();
+  }
+
+  // NEW: Force refresh chat and messages
+  Future<void> refresh() async {
+    print('🔄 ChatController: Force refresh triggered');
+    try {
+      if (_currentChatId != null) {
+        await _chatService.refreshMessagesStream(chatId: _currentChatId);
+      } else {
+        await _initializeChat();
+      }
+    } catch (e) {
+      print('❌ ChatController: Error during refresh: $e');
+    }
   }
 
   void _scheduleRetry() {
@@ -375,9 +419,7 @@ class ChatController extends StateNotifier<ChatState> {
       _retryTimer?.cancel();
 
       final delay = Duration(seconds: _retryCount * 2);
-      print(
-        '🔄 Scheduling retry in ${delay.inSeconds} seconds (attempt $_retryCount)',
-      );
+      print('🔄 ChatController: Scheduling retry in ${delay.inSeconds} seconds (attempt $_retryCount)');
 
       _retryTimer = Timer(delay, () {
         if (_currentChatId != null) {
@@ -392,7 +434,7 @@ class ChatController extends StateNotifier<ChatState> {
   void _cacheMessages(String chatId, List<MessageModel> messages) {
     // Cache messages for offline support
     _chatService.cacheMessages(chatId, messages);
-    print('💾 Cached ${messages.length} messages for chat $chatId');
+    print('💾 ChatController: Cached ${messages.length} messages for chat $chatId');
   }
 
   List<MessageModel> _getCachedMessages() {
@@ -482,3 +524,8 @@ final realTimeMessagesProvider =
         },
       );
     });
+
+// NEW: Provider for chat service status (useful for debugging)
+final chatServiceStatusProvider = Provider<Map<String, dynamic>>((ref) {
+  return ChatService.instance.getServiceStatus();
+});

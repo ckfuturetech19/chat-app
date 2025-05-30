@@ -14,6 +14,8 @@ class MessageModel {
   final bool isDelivered;
   final DateTime? readAt;
   final MessageType type;
+  final bool? isDeleted; // ADD THIS FIELD
+  final DateTime? deletedAt; // ADD THIS FIELD (optional)
 
   const MessageModel({
     required this.id,
@@ -27,9 +29,11 @@ class MessageModel {
     required this.isDelivered,
     this.readAt,
     required this.type,
+    this.isDeleted, // ADD THIS PARAMETER
+    this.deletedAt, // ADD THIS PARAMETER
   });
 
-  // Create MessageModel from Firestore document
+  // UPDATED: Create MessageModel from Firestore document
   factory MessageModel.fromFirestore(DocumentSnapshot<Map<String, dynamic>> doc) {
     final data = doc.data()!;
     return MessageModel(
@@ -48,10 +52,14 @@ class MessageModel {
           ? (data['readAt'] as Timestamp).toDate()
           : null,
       type: _parseMessageType(data['type']),
+      isDeleted: data['isDeleted'] ?? false, // ADD THIS LINE
+      deletedAt: data['deletedAt'] != null // ADD THIS LINE
+          ? (data['deletedAt'] as Timestamp).toDate()
+          : null,
     );
   }
 
-  // Create MessageModel from Map
+  // UPDATED: Create MessageModel from Map
   factory MessageModel.fromMap(Map<String, dynamic> data, String id) {
     return MessageModel(
       id: id,
@@ -69,6 +77,10 @@ class MessageModel {
           ? (data['readAt'] as Timestamp).toDate()
           : null,
       type: _parseMessageType(data['type']),
+      isDeleted: data['isDeleted'] ?? false, // ADD THIS LINE
+      deletedAt: data['deletedAt'] != null // ADD THIS LINE
+          ? (data['deletedAt'] as Timestamp).toDate()
+          : null,
     );
   }
 
@@ -85,7 +97,7 @@ class MessageModel {
     }
   }
 
-  // Convert MessageModel to Map for Firestore
+  // UPDATED: Convert MessageModel to Map for Firestore
   Map<String, dynamic> toMap() {
     return {
       'chatId': chatId,
@@ -98,10 +110,12 @@ class MessageModel {
       'isDelivered': isDelivered,
       'readAt': readAt != null ? Timestamp.fromDate(readAt!) : null,
       'type': type.name,
+      'isDeleted': isDeleted ?? false, // ADD THIS LINE
+      'deletedAt': deletedAt != null ? Timestamp.fromDate(deletedAt!) : null, // ADD THIS LINE
     };
   }
 
-  // Create a copy with updated fields
+  // UPDATED: Create a copy with updated fields
   MessageModel copyWith({
     String? id,
     String? chatId,
@@ -114,6 +128,8 @@ class MessageModel {
     bool? isDelivered,
     DateTime? readAt,
     MessageType? type,
+    bool? isDeleted, // ADD THIS PARAMETER
+    DateTime? deletedAt, // ADD THIS PARAMETER
   }) {
     return MessageModel(
       id: id ?? this.id,
@@ -127,12 +143,44 @@ class MessageModel {
       isDelivered: isDelivered ?? this.isDelivered,
       readAt: readAt ?? this.readAt,
       type: type ?? this.type,
+      isDeleted: isDeleted ?? this.isDeleted, // ADD THIS LINE
+      deletedAt: deletedAt ?? this.deletedAt, // ADD THIS LINE
     );
   }
 
   // Check if message is from current user
   bool isFromCurrentUser(String currentUserId) {
     return senderId == currentUserId;
+  }
+
+  // NEW: Check if message is deleted
+  bool get isMessageDeleted {
+    return isDeleted == true;
+  }
+
+  // UPDATED: Get display text for notifications (handle deleted messages)
+  String get displayText {
+    if (isMessageDeleted) {
+      return 'This message was deleted';
+    }
+    
+    switch (type) {
+      case MessageType.image:
+        return '📷 Photo';
+      case MessageType.text:
+        if (message.length > 50) {
+          return '${message.substring(0, 50)}...';
+        }
+        return message;
+    }
+  }
+
+  // UPDATED: Get message content (handle deleted messages)
+  String get messageContent {
+    if (isMessageDeleted) {
+      return 'This message was deleted';
+    }
+    return message;
   }
 
   // Get formatted timestamp
@@ -203,7 +251,7 @@ class MessageModel {
 
   // Check if message contains only emojis
   bool get isOnlyEmojis {
-    if (type != MessageType.text || message.trim().isEmpty) return false;
+    if (type != MessageType.text || message.trim().isEmpty || isMessageDeleted) return false;
     
     final emojiRegex = RegExp(
       r'[\u{1F600}-\u{1F64F}]|[\u{1F300}-\u{1F5FF}]|[\u{1F680}-\u{1F6FF}]|[\u{1F1E0}-\u{1F1FF}]|[\u{2600}-\u{26FF}]|[\u{2700}-\u{27BF}]',
@@ -217,22 +265,9 @@ class MessageModel {
            emojiMatches.map((m) => m.group(0)!).join() == cleanMessage;
   }
 
-  // Get display text for notifications
-  String get displayText {
-    switch (type) {
-      case MessageType.image:
-        return '📷 Photo';
-      case MessageType.text:
-        if (message.length > 50) {
-          return '${message.substring(0, 50)}...';
-        }
-        return message;
-    }
-  }
-
   @override
   String toString() {
-    return 'MessageModel{id: $id, chatId: $chatId, senderId: $senderId, type: $type, isRead: $isRead}';
+    return 'MessageModel{id: $id, chatId: $chatId, senderId: $senderId, type: $type, isRead: $isRead, isDeleted: $isDeleted}';
   }
 
   @override
@@ -247,7 +282,8 @@ class MessageModel {
         other.timestamp == timestamp &&
         other.isRead == isRead &&
         other.isDelivered == isDelivered &&
-        other.type == type;
+        other.type == type &&
+        other.isDeleted == isDeleted; // ADD THIS LINE
   }
 
   @override
@@ -260,6 +296,7 @@ class MessageModel {
         timestamp.hashCode ^
         isRead.hashCode ^
         isDelivered.hashCode ^
-        type.hashCode;
+        type.hashCode ^
+        (isDeleted?.hashCode ?? 0); // ADD THIS LINE
   }
 }

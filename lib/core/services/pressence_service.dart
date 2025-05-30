@@ -106,7 +106,8 @@ class PresenceService {
   void _handleConnectionLost() async {
     try {
       print('⚠️ Connection lost - user will be marked offline automatically');
-
+      // Update last seen timestamp before going offline
+      await updateLastSeen();
       // Update Firestore to reflect offline status
       await _updateFirestoreOnlineStatus(false);
     } catch (e) {
@@ -345,6 +346,39 @@ class PresenceService {
       print('✅ Presence service disposed');
     } catch (e) {
       print('❌ Error disposing presence service: $e');
+    }
+  }
+
+  // Add this method to your PresenceService class
+
+  // Update user's last seen timestamp without changing online status
+  Future<void> updateLastSeen() async {
+    try {
+      if (_userPresenceRef == null || _userLastSeenRef == null) {
+        await initialize();
+        if (_userPresenceRef == null || _userLastSeenRef == null) return;
+      }
+
+      final currentUser = FirebaseAuth.instance.currentUser;
+      if (currentUser == null) return;
+
+      // Update last seen in both presence and lastSeen references
+      await _userPresenceRef!.update({'lastSeen': ServerValue.timestamp});
+
+      await _userLastSeenRef!.set(ServerValue.timestamp);
+
+      // Also update Firestore timestamp without changing online status
+      await FirebaseFirestore.instance
+          .collection('users')
+          .doc(currentUser.uid)
+          .update({
+            'lastSeen': FieldValue.serverTimestamp(),
+            'updatedAt': FieldValue.serverTimestamp(),
+          });
+
+      print('✅ Last seen timestamp updated');
+    } catch (e) {
+      print('❌ Error updating last seen: $e');
     }
   }
 
