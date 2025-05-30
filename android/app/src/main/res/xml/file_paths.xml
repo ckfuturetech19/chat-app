@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Internal storage paths -->
+    <files-path name="internal_files" path="." />
+    
+    <!-- Cache directory -->
+    <cache-path name="cache" path="." />
+    
+    <!-- External storage paths -->
+    <external-files-path name="external_files" path="." />
+    <external-cache-path name="external_cache" path="." />
+    
+    <!-- Pictures directory for OnlyUs -->
+    <external-files-path name="onlyus_images" path="Pictures/OnlyUs/" />
+    
+    <!-- Downloads directory -->
+    <external-path name="external_downloads" path="Download/" />
+    
+    <!-- Media paths for image sharing -->
+    <external-media-path name="external_media" path="." />
+</paths>

@@ -1,0 +1,39 @@
+{
+  "project_info": {
+    "project_number": "251547780134",
+    "project_id": "onlyus-70c03",
+    "storage_bucket": "onlyus-70c03.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:251547780134:android:f67951c3864b6e51bc12e7",
+        "android_client_info": {
+          "package_name": "com.example.onlyus"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "251547780134-d2vk6b7c3ll3ma62r6bc1uvg7eu09pt7.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBBjSXAsPXxWHFIX-odP37-jl-8QGdymOQ"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "251547780134-d2vk6b7c3ll3ma62r6bc1uvg7eu09pt7.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
