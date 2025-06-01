@@ -58,5 +58,6 @@ class DefaultFirebaseOptions {
     messagingSenderId: '251547780134',
     projectId: 'onlyus-70c03',
     storageBucket: 'onlyus-70c03.firebasestorage.app',
+    databaseURL: 'https://onlyus-70c03-default-rtdb.asia-southeast1.firebasedatabase.app',
   );
 }

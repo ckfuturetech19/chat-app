@@ -6,7 +6,6 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:onlyus/core/services/couple_code_serivce.dart';
 import 'package:onlyus/core/services/firebase_service.dart';
-import 'package:onlyus/screens/code_entry_screen.dart';
 import 'package:share_plus/share_plus.dart';
 import 'dart:math' as math;
 
@@ -37,7 +36,6 @@ class _CodeDisplayScreenState extends ConsumerState<CodeDisplayScreen>
   late Animation<double> _pulseAnimation;
 
   bool _isWaitingForPartner = true;
-  String? _partnerId;
 
   // Add stream subscription for real-time updates
   StreamSubscription<DocumentSnapshot>? _userConnectionSubscription;
@@ -130,7 +128,6 @@ class _CodeDisplayScreenState extends ConsumerState<CodeDisplayScreen>
         // Immediately update UI state
         setState(() {
           _isWaitingForPartner = false;
-          _partnerId = result.partnerId;
           _isEnteringCode = false;
         });
 
@@ -194,7 +191,6 @@ class _CodeDisplayScreenState extends ConsumerState<CodeDisplayScreen>
 
                 setState(() {
                   _isWaitingForPartner = false;
-                  _partnerId = partnerId;
                 });
 
                 // Initialize chat and navigate

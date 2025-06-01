@@ -356,6 +356,68 @@ class UserModel {
     );
   }
 
+  // Add this method to your UserModel class
+factory UserModel.fromMap(Map<String, dynamic> data, String uid) {
+  return UserModel(
+    uid: uid,
+    email: data['email'] ?? '',
+    displayName: data['displayName'] ?? 'Unknown',
+    photoURL: data['photoURL'],
+    isOnline: data['isOnline'] ?? false,
+    lastSeen: data['lastSeen'] is Timestamp 
+        ? (data['lastSeen'] as Timestamp).toDate()
+        : data['lastSeen'] is DateTime 
+        ? data['lastSeen'] as DateTime
+        : null,
+    realtimeLastSeen: data['realtimeLastSeen'] != null
+        ? DateTime.fromMillisecondsSinceEpoch(data['realtimeLastSeen'])
+        : null,
+    partnerId: data['partnerId'],
+    oneSignalPlayerId: data['oneSignalPlayerId'],
+    createdAt: data['createdAt'] is Timestamp
+        ? (data['createdAt'] as Timestamp).toDate()
+        : data['createdAt'] is DateTime
+        ? data['createdAt'] as DateTime
+        : null,
+    updatedAt: data['updatedAt'] is Timestamp
+        ? (data['updatedAt'] as Timestamp).toDate()
+        : data['updatedAt'] is DateTime
+        ? data['updatedAt'] as DateTime
+        : null,
+    privacySettings: Map<String, dynamic>.from(data['privacySettings'] ?? {}),
+    isConnected: data['isConnected'] ?? false,
+    partnerName: data['partnerName'],
+    coupleCode: data['coupleCode'],
+    connectedAt: data['connectedAt'] is Timestamp
+        ? (data['connectedAt'] as Timestamp).toDate()
+        : data['connectedAt'] is DateTime
+        ? data['connectedAt'] as DateTime
+        : null,
+  );
+}
+
+// Add this method to your UserModel class
+Map<String, dynamic> toMap() {
+  return {
+    'uid': uid,
+    'email': email,
+    'displayName': displayName,
+    'photoURL': photoURL,
+    'isOnline': isOnline,
+    'lastSeen': lastSeen?.millisecondsSinceEpoch,
+    'realtimeLastSeen': realtimeLastSeen?.millisecondsSinceEpoch,
+    'partnerId': partnerId,
+    'oneSignalPlayerId': oneSignalPlayerId,
+    'createdAt': createdAt?.millisecondsSinceEpoch,
+    'updatedAt': updatedAt?.millisecondsSinceEpoch,
+    'privacySettings': privacySettings,
+    'isConnected': isConnected,
+    'partnerName': partnerName,
+    'coupleCode': coupleCode,
+    'connectedAt': connectedAt?.millisecondsSinceEpoch,
+  };
+}
+
   @override
   String toString() {
     return 'UserModel(uid: $uid, displayName: $displayName, isOnline: $actualOnlineStatus, status: $chatStatusText)';

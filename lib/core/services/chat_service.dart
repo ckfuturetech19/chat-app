@@ -3,6 +3,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:onlyus/core/services/couple_code_serivce.dart';
 import 'package:onlyus/core/services/pressence_service.dart';
+import 'package:onlyus/models/user_model.dart';
 
 import '../../models/chat_model.dart';
 import '../../models/message_model.dart';
@@ -36,6 +37,12 @@ class ChatService {
 
   // Message delivery confirmation
   final Map<String, Completer<bool>> _messageDeliveryCompleters = {};
+
+  // ADD: Prevent continuous read marking loops
+  final Map<String, DateTime> _lastReadMarkTime = {};
+  final Map<String, DateTime> _lastPartnerInfoCheck = {};
+  static const Duration _readMarkCooldown = Duration(seconds: 30);
+  static const Duration _partnerInfoCooldown = Duration(seconds: 10);
 
   void initialize() async {
     _setupConnectivityListener();
@@ -89,7 +96,7 @@ class ChatService {
         });
   }
 
-  // UPDATED METHOD 1: Enhanced initializeChatWithPartner
+  // UPDATED: Enhanced initializeChatWithPartner
   Future<String?> initializeChatWithPartner() async {
     try {
       final currentUserId = FirebaseService.currentUserId;
@@ -144,21 +151,28 @@ class ChatService {
     }
   }
 
-  // UPDATED METHOD 2: Enhanced findExistingChat
+  // UPDATED: Enhanced findExistingChat
   Future<String?> findExistingChat() async {
     try {
       final currentUserId = FirebaseService.currentUserId;
       if (currentUserId == null) return null;
 
-      // Query chats where current user is a participant
+      // Query chats where current user is a participant and hasn't deleted the chat
       final chatsQuery =
           await FirebaseService.chatsCollection
               .where('participants', arrayContains: currentUserId)
               .limit(1)
               .get();
 
-      if (chatsQuery.docs.isNotEmpty) {
-        final chatDoc = chatsQuery.docs.first;
+      for (final chatDoc in chatsQuery.docs) {
+        final chatData = chatDoc.data();
+        final deletedBy = List<String>.from(chatData['deletedBy'] ?? []);
+
+        // Skip if current user has deleted this chat
+        if (deletedBy.contains(currentUserId)) {
+          continue;
+        }
+
         final chatId = chatDoc.id;
         _activeChatId = chatId;
         print('✅ Found existing chat: $chatId');
@@ -169,7 +183,7 @@ class ChatService {
         return chatId;
       }
 
-      print('⚠️ No existing chat found');
+      print('⚠️ No existing active chat found');
       return null;
     } catch (e) {
       print('❌ Error finding existing chat: $e');
@@ -177,7 +191,7 @@ class ChatService {
     }
   }
 
-  // UPDATED METHOD 3: Enhanced getMessagesStream
+  // UPDATED: Enhanced getMessagesStream with subcollection
   Stream<List<MessageModel>> getMessagesStream({String? chatId}) {
     final activeChatId = chatId ?? _activeChatId;
     if (activeChatId == null) {
@@ -199,7 +213,7 @@ class ChatService {
     return _messageStreamControllers[activeChatId]!.stream;
   }
 
-  // UPDATED METHOD 4: Improved message stream listener setup
+  // UPDATED: Improved message stream listener setup with subcollection
   Future<void> _setupMessageStreamListener(String chatId) async {
     final controller = _messageStreamControllers[chatId];
     if (controller == null || controller.isClosed) {
@@ -208,26 +222,22 @@ class ChatService {
     }
 
     await _messageSubscriptions[chatId]?.cancel();
-    print('📡 Setting up message stream with existing index for chat: $chatId');
+    print('📡 Setting up message stream for subcollection chat: $chatId');
 
     try {
-      // Use the EXACT query that matches your Index 3:
-      // chatId (Ascending) + isDeleted (Ascending) + timestamp (Descending)
-      final query = FirebaseService.messagesCollection
-          .where('chatId', isEqualTo: chatId)
+      // UPDATED: Use subcollection query
+      final query = FirebaseService.getMessagesCollection(chatId)
           .where('isDeleted', isEqualTo: false)
           .orderBy('timestamp', descending: true)
           .limit(100);
 
-      print(
-        '📋 Using query: chatId == $chatId AND isDeleted == false ORDER BY timestamp DESC',
-      );
+      print('📋 Using subcollection query for chat: $chatId');
 
       _messageSubscriptions[chatId] = query.snapshots().listen(
         (snapshot) {
           try {
             print(
-              '📨 Index-optimized stream received ${snapshot.docs.length} messages',
+              '📨 Subcollection stream received ${snapshot.docs.length} messages',
             );
 
             final messages =
@@ -254,11 +264,11 @@ class ChatService {
             if (!controller.isClosed) {
               controller.add(messages);
               print(
-                '✅ Index-optimized stream updated with ${messages.length} messages',
+                '✅ Subcollection stream updated with ${messages.length} messages',
               );
             }
           } catch (e) {
-            print('❌ Error processing indexed message snapshot: $e');
+            print('❌ Error processing subcollection message snapshot: $e');
             final cachedMessages = _messageCache[chatId] ?? [];
             if (!controller.isClosed) {
               controller.add(cachedMessages);
@@ -266,20 +276,9 @@ class ChatService {
           }
         },
         onError: (error) {
-          print('❌ Index-optimized message stream error: $error');
+          print('❌ Subcollection message stream error: $error');
 
-          final errorString = error.toString().toLowerCase();
-
-          if (errorString.contains('index') ||
-              errorString.contains('failed-precondition')) {
-            print(
-              '⚠️ Index still building or error - falling back to simple query',
-            );
-            _setupFallbackQuery(chatId);
-            return;
-          }
-
-          // Provide cached messages for other errors
+          // Provide cached messages for errors
           final cachedMessages = _messageCache[chatId] ?? [];
           if (!controller.isClosed) {
             controller.add(cachedMessages);
@@ -288,122 +287,130 @@ class ChatService {
           // Retry after delay
           Timer(const Duration(seconds: 5), () {
             if (!controller.isClosed && _isOnline) {
-              print('🔄 Retrying index-optimized query for chat: $chatId');
+              print('🔄 Retrying subcollection query for chat: $chatId');
               _setupMessageStreamListener(chatId);
             }
           });
         },
       );
     } catch (e) {
-      print('❌ Error setting up index-optimized stream: $e');
-      _setupFallbackQuery(chatId);
+      print('❌ Error setting up subcollection stream: $e');
     }
   }
 
-  void _setupFallbackQuery(String chatId) {
-    final controller = _messageStreamControllers[chatId];
-    if (controller == null || controller.isClosed) return;
+  // NEW: Soft delete chat for current user
+  Future<bool> deleteChatForCurrentUser({String? chatId}) async {
+    try {
+      final currentUserId = FirebaseService.currentUserId;
+      if (currentUserId == null) {
+        print('❌ No current user for chat deletion');
+        return false;
+      }
 
-    print('📡 Setting up fallback query for chat: $chatId');
+      final activeChatId = chatId ?? _activeChatId;
+      if (activeChatId == null) {
+        print('❌ No chat ID provided for deletion');
+        return false;
+      }
 
-    // Simple query using Index 1: chatId + timestamp
-    final query = FirebaseService.messagesCollection
-        .where('chatId', isEqualTo: chatId)
-        .orderBy('timestamp', descending: true)
-        .limit(50);
+      print('🗑️ Soft deleting chat for user: $currentUserId');
 
-    _messageSubscriptions[chatId] = query.snapshots().listen(
-      (snapshot) {
-        try {
-          print('📨 Fallback stream received ${snapshot.docs.length} messages');
+      // Soft delete the chat for current user
+      await FirebaseService.deleteChatForUser(activeChatId, currentUserId);
 
-          // Filter deleted messages in code
-          final messages =
-              snapshot.docs
-                  .map(
-                    (doc) => MessageModel.fromFirestore(
-                      doc as DocumentSnapshot<Map<String, dynamic>>,
-                    ),
-                  )
-                  .where((message) => !(message.isDeleted ?? false))
-                  .toList();
+      // Clear local state if this was the active chat
+      if (activeChatId == _activeChatId) {
+        _activeChatId = null;
 
-          _messageCache[chatId] = messages;
+        // Close stream for this chat
+        await _messageSubscriptions[activeChatId]?.cancel();
+        _messageSubscriptions.remove(activeChatId);
 
-          if (!controller.isClosed) {
-            controller.add(messages);
-            print('✅ Fallback stream updated with ${messages.length} messages');
-          }
-        } catch (e) {
-          print('❌ Error in fallback stream: $e');
+        // Close stream controller
+        final controller = _messageStreamControllers[activeChatId];
+        if (controller != null && !controller.isClosed) {
+          controller.close();
         }
-      },
-      onError: (error) {
-        print('❌ Fallback stream error: $error');
-        final cachedMessages = _messageCache[chatId] ?? [];
-        if (!controller.isClosed) {
-          controller.add(cachedMessages);
-        }
-      },
-    );
+        _messageStreamControllers.remove(activeChatId);
+
+        // Clear cache
+        _messageCache.remove(activeChatId);
+      }
+
+      print('✅ Chat soft deleted successfully');
+      return true;
+    } catch (e) {
+      print('❌ Error soft deleting chat: $e');
+      return false;
+    }
   }
 
-  //   // NEW METHOD 5: Fallback simple message stream listener
-  //  void _setupSimpleMessageStreamListener(String chatId) {
-  //   final controller = _messageStreamControllers[chatId];
-  //   if (controller == null || controller.isClosed) return;
+  // NEW: Get user's chats stream (excluding deleted ones)
+  Stream<List<DocumentSnapshot<Map<String, dynamic>>>> getUserChatsStream() {
+    final currentUserId = FirebaseService.currentUserId;
+    if (currentUserId == null) {
+      return Stream.value([]);
+    }
 
-  //   print('📡 Setting up SUPER SIMPLE message stream for chat: $chatId');
+    return FirebaseService.getUserChatsStreamFiltered(currentUserId);
+  }
 
-  //   // Simplest possible query - just filter by chatId
-  //   final query = FirebaseService.messagesCollection
-  //       .where('chatId', isEqualTo: chatId)
-  //       .limit(50); // Reduced limit for better performance
+  // NEW: Check if chat is deleted by current user
+  Future<bool> isChatDeletedByUser({String? chatId}) async {
+    try {
+      final currentUserId = FirebaseService.currentUserId;
+      if (currentUserId == null) return false;
 
-  //   _messageSubscriptions[chatId] = query.snapshots().listen(
-  //     (snapshot) {
-  //       try {
-  //         print('📨 Simple stream received ${snapshot.docs.length} messages');
+      final activeChatId = chatId ?? _activeChatId;
+      if (activeChatId == null) return false;
 
-  //         final messages = snapshot.docs
-  //             .map((doc) => MessageModel.fromFirestore(
-  //                   doc as DocumentSnapshot<Map<String, dynamic>>,
-  //                 ))
-  //             .where((message) => !(message.isDeleted ?? false))
-  //             .toList();
+      final chatDoc =
+          await FirebaseService.chatsCollection.doc(activeChatId).get();
+      if (!chatDoc.exists) return true; // Consider non-existent as deleted
 
-  //         // Sort messages manually (newest first)
-  //         messages.sort((a, b) => b.timestamp.compareTo(a.timestamp));
+      final chatData = chatDoc.data() as Map<String, dynamic>;
+      final deletedBy = List<String>.from(chatData['deletedBy'] ?? []);
 
-  //         // Limit to last 50 messages
-  //         if (messages.length > 50) {
-  //           messages.removeRange(50, messages.length);
-  //         }
+      return deletedBy.contains(currentUserId);
+    } catch (e) {
+      print('❌ Error checking if chat is deleted: $e');
+      return false;
+    }
+  }
 
-  //         // Cache and update stream
-  //         _messageCache[chatId] = messages;
+  // NEW: Restore deleted chat
+  Future<bool> restoreChat({String? chatId}) async {
+    try {
+      final currentUserId = FirebaseService.currentUserId;
+      if (currentUserId == null) {
+        print('❌ No current user for chat restoration');
+        return false;
+      }
 
-  //         if (!controller.isClosed) {
-  //           controller.add(messages);
-  //           print('✅ Simple stream updated with ${messages.length} messages');
-  //         }
-  //       } catch (e) {
-  //         print('❌ Error in simple message stream: $e');
-  //       }
-  //     },
-  //     onError: (error) {
-  //       print('❌ Simple message stream error: $error');
+      final activeChatId = chatId ?? _activeChatId;
+      if (activeChatId == null) {
+        print('❌ No chat ID provided for restoration');
+        return false;
+      }
 
-  //       // Provide cached messages as fallback
-  //       final cachedMessages = _messageCache[chatId] ?? [];
-  //       if (!controller.isClosed) {
-  //         controller.add(cachedMessages);
-  //       }
-  //     },
-  //   );
-  // }
+      print('🔄 Restoring chat for user: $currentUserId');
 
-  // NEW METHOD 6: Force refresh messages stream
+      await FirebaseService.restoreChatForUser(activeChatId, currentUserId);
+
+      // Set up streams again if this becomes active chat
+      if (activeChatId == _activeChatId) {
+        await _setupMessageStreamListener(activeChatId);
+      }
+
+      print('✅ Chat restored successfully');
+      return true;
+    } catch (e) {
+      print('❌ Error restoring chat: $e');
+      return false;
+    }
+  }
+
+  // Force refresh messages stream
   Future<void> refreshMessagesStream({String? chatId}) async {
     final activeChatId = chatId ?? _activeChatId;
     if (activeChatId == null) return;
@@ -417,7 +424,7 @@ class ChatService {
     await _setupMessageStreamListener(activeChatId);
   }
 
-  // NEW METHOD 7: Set active chat ID and setup stream
+  // Set active chat ID and setup stream
   Future<void> setActiveChatId(String? chatId) async {
     _activeChatId = chatId;
     if (chatId != null) {
@@ -425,7 +432,7 @@ class ChatService {
     }
   }
 
-  // UPDATED METHOD 8: Enhanced _refreshAllStreams
+  // Enhanced _refreshAllStreams
   void _refreshAllStreams() {
     // Refresh all active message streams when connection is restored
     _messageStreamControllers.forEach((chatId, controller) {
@@ -436,7 +443,7 @@ class ChatService {
     });
   }
 
-  // NEW METHOD 9: Check if stream is active for debugging
+  // Check if stream is active for debugging
   bool isStreamActive(String? chatId) {
     final activeChatId = chatId ?? _activeChatId;
     if (activeChatId == null) return false;
@@ -465,7 +472,6 @@ class ChatService {
     }
   }
 
-  // In chat_service.dart:
   Future<bool> canInitializeChat() async {
     final currentUserId = FirebaseService.currentUserId;
     if (currentUserId == null) return false;
@@ -491,6 +497,7 @@ class ChatService {
     }
   }
 
+  // UPDATED: Send text message with subcollection support
   Future<bool> sendTextMessage({
     required String message,
     String? chatId,
@@ -540,8 +547,8 @@ class ChatService {
       final deliveryCompleter = Completer<bool>();
       _messageDeliveryCompleters[messageId] = deliveryCompleter;
 
-      // Send message to Firebase with enhanced data
-      print('🔍 Sending message to Firebase...');
+      // UPDATED: Send message to Firebase subcollection
+      print('🔍 Sending message to Firebase subcollection...');
       await FirebaseService.sendMessage(
         chatId: _activeChatId!,
         message: message.trim(),
@@ -549,20 +556,20 @@ class ChatService {
         senderName: currentUser.displayName ?? 'Unknown',
         messageId: messageId,
       );
-      print('✅ Message sent to Firebase');
+      print('✅ Message sent to Firebase subcollection');
 
       // Update last activity
       await _updateLastActivity(_activeChatId!);
       print('✅ Updated last activity');
 
-      // Send push notification to partner (improved)
-      await _sendNotificationToPartner(
+      // FIXED: Enhanced notification sending with better targeting
+      await _sendNotificationToPartnerEnhanced(
         chatId: _activeChatId!,
         message: message.trim(),
         senderId: currentUser.uid,
         senderName: currentUser.displayName ?? 'OnlyUs',
       );
-      print('✅ Notification sent');
+      print('✅ Enhanced notification sent');
 
       // Clear typing status
       await updateTypingStatus(false);
@@ -585,6 +592,7 @@ class ChatService {
     }
   }
 
+  // UPDATED: Send image message with subcollection support
   Future<bool> sendImageMessage({
     required String imageUrl,
     String? caption,
@@ -610,7 +618,7 @@ class ChatService {
         _activeChatId = newChatId;
       }
 
-      // Send image message to Firebase
+      // Send image message to Firebase subcollection
       final messageId = FirebaseService.generateMessageId();
       await FirebaseService.sendMessage(
         chatId: _activeChatId!,
@@ -624,8 +632,8 @@ class ChatService {
       // Update last activity
       await _updateLastActivity(_activeChatId!);
 
-      // Send push notification to partner
-      await _sendNotificationToPartner(
+      // FIXED: Enhanced notification for image messages
+      await _sendNotificationToPartnerEnhanced(
         chatId: _activeChatId!,
         message: '📷 Photo',
         senderId: currentUser.uid,
@@ -653,7 +661,7 @@ class ChatService {
       // Update local typing status
       _typingStatus[currentUserId] = isTyping;
 
-      // Update typing status in Firestore with better error handling
+      // Update typing status in Firestore
       await FirebaseService.chatsCollection
           .doc(_activeChatId!)
           .update({
@@ -668,7 +676,8 @@ class ChatService {
     }
   }
 
-  Future<void> markMessagesAsRead({String? chatId}) async {
+  // FIXED: Enhanced mark messages as read with cooldown to prevent loops
+  Future<void> markMessagesAsReadEnhanced({String? chatId}) async {
     try {
       final currentUserId = FirebaseService.currentUserId;
       if (currentUserId == null || !_isOnline) return;
@@ -676,13 +685,38 @@ class ChatService {
       final activeChatId = chatId ?? _activeChatId;
       if (activeChatId == null) return;
 
-      await FirebaseService.markMessagesAsRead(activeChatId, currentUserId);
-      print('✅ Messages marked as read');
+      // CHECK: Prevent continuous read marking with cooldown
+      final now = DateTime.now();
+      final lastMarkTime = _lastReadMarkTime[activeChatId];
+
+      if (lastMarkTime != null &&
+          now.difference(lastMarkTime) < _readMarkCooldown) {
+        print(
+          '🔄 Skipping read mark - cooldown active (${now.difference(lastMarkTime).inSeconds}s ago)',
+        );
+        return;
+      }
+
+      _lastReadMarkTime[activeChatId] = now;
+
+      print('🔍 Marking received messages as read for chat: $activeChatId');
+
+      // FIXED: Only mark messages as read that were received by current user
+      await FirebaseService.markReceivedMessagesAsRead(
+        activeChatId,
+        currentUserId,
+      );
+
+      // Also update presence to show user is active
+      await PresenceService.instance.updateLastSeen();
+
+      print('✅ Received messages marked as read and presence updated');
     } catch (e) {
-      print('❌ Error marking messages as read: $e');
+      print('❌ Error marking received messages as read: $e');
     }
   }
 
+  // UPDATED: Delete message in subcollection
   Future<bool> deleteMessage(String messageId) async {
     try {
       if (!_isOnline) {
@@ -690,7 +724,12 @@ class ChatService {
         return false;
       }
 
-      await FirebaseService.deleteMessage(messageId);
+      if (_activeChatId == null) {
+        print('❌ No active chat for message deletion');
+        return false;
+      }
+
+      await FirebaseService.deleteMessage(_activeChatId!, messageId);
       print('✅ Message deleted successfully');
       return true;
     } catch (e) {
@@ -788,316 +827,6 @@ class ChatService {
     }
   }
 
-  Future<String?> _forceCreateChatWithPartner() async {
-    try {
-      final currentUserId = FirebaseService.currentUserId;
-      if (currentUserId == null) return null;
-
-      // Get partner ID directly from CoupleCodeService
-      final partnerId = await CoupleCodeService.instance.getPartnerId(
-        currentUserId,
-      );
-      if (partnerId == null) {
-        print('❌ No partner ID found');
-        return null;
-      }
-
-      print('🔍 Force creating chat with partner: $partnerId');
-
-      // Create chat ID manually
-      final List<String> userIds = [currentUserId, partnerId];
-      userIds.sort();
-      final chatId = '${userIds[0]}_${userIds[1]}';
-
-      // Force create the chat document
-      await FirebaseService.chatsCollection.doc(chatId).set({
-        'id': chatId,
-        'chatId': chatId,
-        'participants': userIds,
-        'participantNames': {},
-        'participantPhotos': {},
-        'lastMessage': '',
-        'lastMessageTime': FieldValue.serverTimestamp(),
-        'lastMessageSender': '',
-        'lastMessageSenderId': '',
-        'createdAt': FieldValue.serverTimestamp(),
-        'updatedAt': FieldValue.serverTimestamp(),
-        'typingUsers': {},
-        'isActive': true,
-        'messageCount': 0,
-        'forceCreated': true, // Flag to indicate this was force created
-      }, SetOptions(merge: true));
-
-      // Update participant details
-      await _updateChatParticipantDetailsForce(chatId, userIds);
-
-      _activeChatId = chatId;
-      print('✅ Force created chat: $chatId');
-      return chatId;
-    } catch (e) {
-      print('❌ Error in force create chat: $e');
-      return null;
-    }
-  }
-
-  // Update chat participant details with force flag
-  Future<void> _updateChatParticipantDetailsForce(
-    String chatId,
-    List<String> userIds,
-  ) async {
-    try {
-      print('🔍 Updating chat participant details for chat: $chatId');
-
-      final Map<String, String> participantNames = {};
-      final Map<String, String> participantPhotos = {};
-
-      for (final userId in userIds) {
-        try {
-          print('📋 Fetching user data for: $userId');
-
-          final userDoc =
-              await FirebaseService.usersCollection.doc(userId).get();
-
-          if (userDoc.exists) {
-            final userData = userDoc.data() as Map<String, dynamic>;
-
-            final displayName = userData['displayName'] as String?;
-            final photoURL = userData['photoURL'] as String?;
-
-            participantNames[userId] = displayName ?? 'Unknown User';
-            participantPhotos[userId] = photoURL ?? '';
-
-            print(
-              '✅ User data found - Name: ${participantNames[userId]}, Photo: ${photoURL != null ? 'Yes' : 'No'}',
-            );
-          } else {
-            print('⚠️ User document not found: $userId');
-            participantNames[userId] = 'Unknown User';
-            participantPhotos[userId] = '';
-          }
-        } catch (e) {
-          print('❌ Error fetching user data for $userId: $e');
-          participantNames[userId] = 'Unknown User';
-          participantPhotos[userId] = '';
-        }
-      }
-
-      // Validate that we have data for all participants
-      if (participantNames.length != userIds.length) {
-        print('⚠️ Warning: Missing participant data for some users');
-      }
-
-      print('📋 Participant names: $participantNames');
-      print('📋 Updating chat document with participant details...');
-
-      // Update the chat with participant details
-      await FirebaseService.chatsCollection.doc(chatId).update({
-        'participantNames': participantNames,
-        'participantPhotos': participantPhotos,
-        'participantsUpdated': true,
-        'participantsUpdatedAt': FieldValue.serverTimestamp(),
-        'updatedAt': FieldValue.serverTimestamp(),
-      });
-
-      print('✅ Updated chat participant details for $chatId (force mode)');
-
-      // Verify the update was successful
-      try {
-        final updatedChatDoc =
-            await FirebaseService.chatsCollection.doc(chatId).get();
-        if (updatedChatDoc.exists) {
-          final chatData = updatedChatDoc.data() as Map<String, dynamic>;
-          final updatedNames =
-              chatData['participantNames'] as Map<String, dynamic>?;
-
-          if (updatedNames != null && updatedNames.length == userIds.length) {
-            print('✅ Participant details update verified successfully');
-          } else {
-            print('⚠️ Participant details update verification failed');
-          }
-        }
-      } catch (verifyError) {
-        print('❌ Error verifying participant details update: $verifyError');
-        // Don't rethrow - the main update might have succeeded
-      }
-    } catch (e) {
-      print('❌ Error updating chat participant details (force): $e');
-
-      // Try a simplified update as fallback
-      try {
-        print('🔄 Attempting simplified participant update...');
-
-        await FirebaseService.chatsCollection.doc(chatId).update({
-          'participantNames': {for (final userId in userIds) userId: 'User'},
-          'participantPhotos': {for (final userId in userIds) userId: ''},
-          'participantsUpdated': true,
-          'participantsUpdatedAt': FieldValue.serverTimestamp(),
-          'updatedAt': FieldValue.serverTimestamp(),
-        });
-
-        print('✅ Simplified participant update successful');
-      } catch (fallbackError) {
-        print('❌ Fallback participant update also failed: $fallbackError');
-        // Don't rethrow - this is not critical for chat functionality
-      }
-    }
-  }
-
-  // Helper method to get user display info safely
-  Future<Map<String, String>> _getUserDisplayInfo(String userId) async {
-    try {
-      final userDoc = await FirebaseService.usersCollection.doc(userId).get();
-
-      if (userDoc.exists) {
-        final userData = userDoc.data() as Map<String, dynamic>;
-
-        return {
-          'name': userData['displayName'] as String? ?? 'Unknown User',
-          'photo': userData['photoURL'] as String? ?? '',
-          'email': userData['email'] as String? ?? '',
-        };
-      } else {
-        print('⚠️ User document not found for: $userId');
-        return {'name': 'Unknown User', 'photo': '', 'email': ''};
-      }
-    } catch (e) {
-      print('❌ Error getting user display info for $userId: $e');
-      return {'name': 'Unknown User', 'photo': '', 'email': ''};
-    }
-  }
-
-  // Enhanced method to update chat participants with retry logic
-  Future<void> updateChatParticipantDetailsWithRetry(
-    String chatId,
-    List<String> userIds, {
-    int maxRetries = 3,
-  }) async {
-    int attempts = 0;
-
-    while (attempts < maxRetries) {
-      attempts++;
-
-      try {
-        print(
-          '🔍 Participant update attempt $attempts/$maxRetries for chat: $chatId',
-        );
-
-        // Get all participant info in parallel for better performance
-        final participantInfoFutures = userIds.map(
-          (userId) => _getUserDisplayInfo(userId),
-        );
-        final participantInfoList = await Future.wait(participantInfoFutures);
-
-        final Map<String, String> participantNames = {};
-        final Map<String, String> participantPhotos = {};
-        final Map<String, String> participantEmails = {};
-
-        for (int i = 0; i < userIds.length; i++) {
-          final userId = userIds[i];
-          final info = participantInfoList[i];
-
-          participantNames[userId] = info['name']!;
-          participantPhotos[userId] = info['photo']!;
-          participantEmails[userId] = info['email']!;
-        }
-
-        // Update chat with all participant information
-        await FirebaseService.chatsCollection.doc(chatId).update({
-          'participantNames': participantNames,
-          'participantPhotos': participantPhotos,
-          'participantEmails': participantEmails,
-          'participantsCount': userIds.length,
-          'participantsUpdated': true,
-          'participantsUpdatedAt': FieldValue.serverTimestamp(),
-          'lastParticipantUpdate': DateTime.now().millisecondsSinceEpoch,
-          'updatedAt': FieldValue.serverTimestamp(),
-        });
-
-        print(
-          '✅ Participant details updated successfully on attempt $attempts',
-        );
-        return; // Success, exit the retry loop
-      } catch (e) {
-        print('❌ Participant update attempt $attempts failed: $e');
-
-        if (attempts >= maxRetries) {
-          print('❌ All participant update attempts failed');
-
-          // Final fallback - set minimal data
-          try {
-            await FirebaseService.chatsCollection.doc(chatId).update({
-              'participants': userIds,
-              'participantsCount': userIds.length,
-              'participantsUpdated': false,
-              'participantsUpdateFailed': true,
-              'updatedAt': FieldValue.serverTimestamp(),
-            });
-
-            print('✅ Minimal participant data set as fallback');
-          } catch (finalError) {
-            print('❌ Even minimal participant update failed: $finalError');
-          }
-
-          // Don't rethrow - chat can still function without detailed participant info
-          return;
-        }
-
-        // Wait before retrying (exponential backoff)
-        await Future.delayed(Duration(milliseconds: 500 * attempts));
-      }
-    }
-  }
-
-  // Method to verify and fix participant data if needed
-  Future<bool> verifyAndFixParticipantData(String chatId) async {
-    try {
-      print('🔍 Verifying participant data for chat: $chatId');
-
-      final chatDoc = await FirebaseService.chatsCollection.doc(chatId).get();
-
-      if (!chatDoc.exists) {
-        print('❌ Chat document not found: $chatId');
-        return false;
-      }
-
-      final chatData = chatDoc.data() as Map<String, dynamic>;
-      final participants = List<String>.from(chatData['participants'] ?? []);
-      final participantNames =
-          chatData['participantNames'] as Map<String, dynamic>?;
-
-      // Check if participant names are missing or incomplete
-      bool needsUpdate = false;
-
-      if (participantNames == null || participantNames.isEmpty) {
-        print('⚠️ Participant names are missing');
-        needsUpdate = true;
-      } else {
-        for (final participantId in participants) {
-          if (!participantNames.containsKey(participantId) ||
-              participantNames[participantId] == null ||
-              participantNames[participantId] == 'Unknown' ||
-              participantNames[participantId] == '') {
-            print('⚠️ Participant name missing or invalid for: $participantId');
-            needsUpdate = true;
-            break;
-          }
-        }
-      }
-
-      if (needsUpdate) {
-        print('🔄 Participant data needs update, fixing...');
-        await updateChatParticipantDetailsWithRetry(chatId, participants);
-        return true;
-      } else {
-        print('✅ Participant data is valid');
-        return false;
-      }
-    } catch (e) {
-      print('❌ Error verifying participant data: $e');
-      return false;
-    }
-  }
-
   // Enhanced chat stream for typing indicators
   Stream<ChatModel?> getChatStream({String? chatId}) {
     final activeChatId = chatId ?? _activeChatId;
@@ -1128,15 +857,10 @@ class ChatService {
       final activeChatId = chatId ?? _activeChatId;
       if (activeChatId == null) return 0;
 
-      final unreadMessages =
-          await FirebaseService.messagesCollection
-              .where('chatId', isEqualTo: activeChatId)
-              .where('senderId', isNotEqualTo: currentUserId)
-              .where('isRead', isEqualTo: false)
-              .where('isDeleted', isEqualTo: false)
-              .get();
-
-      return unreadMessages.docs.length;
+      return await FirebaseService.getUnreadMessageCount(
+        activeChatId,
+        currentUserId,
+      );
     } catch (e) {
       print('❌ Error getting unread message count: $e');
       return 0;
@@ -1153,15 +877,15 @@ class ChatService {
     }
   }
 
-  // Enhanced notification sending with better error handling
-  Future<void> _sendNotificationToPartner({
+  // FIXED: Enhanced notification sending with better presence checking
+  Future<void> _sendNotificationToPartnerEnhanced({
     required String chatId,
     required String message,
     required String senderId,
     required String senderName,
   }) async {
     try {
-      print('📤 Sending notification to partner...');
+      print('📤 Sending enhanced notification to partner...');
       print('📋 Chat ID: $chatId');
       print('📋 Sender: $senderName');
       print('📋 Message: $message');
@@ -1172,24 +896,79 @@ class ChatService {
         return;
       }
 
-      // Get partner info with better error handling
-      final partnerInfo = await getPartnerInfo(currentUserId);
+      // FIXED: Get partner info WITHOUT cooldown for notifications
+      final partnerInfo = await getPartnerInfoForNotification(currentUserId);
       if (partnerInfo == null) {
-        print('⚠️ No partner found for notification');
+        print('❌ No partner found for notification');
         return;
       }
 
       final partnerId = partnerInfo['partnerId'] as String;
       final oneSignalPlayerId = partnerInfo['oneSignalPlayerId'] as String;
       final partnerName = partnerInfo['displayName'] as String;
+      final isPartnerOnline = partnerInfo['isOnline'] as bool? ?? false;
 
       print('✅ Partner info retrieved:');
       print('  - Partner ID: $partnerId');
       print('  - Player ID: $oneSignalPlayerId');
       print('  - Name: $partnerName');
+      print('  - Is Online: $isPartnerOnline');
 
-      // Use enhanced notification service
-      await NotificationService.sendMessageNotification(
+      // SIMPLIFIED: Always send notification if partner is offline
+      // Check partner presence more thoroughly
+      bool shouldSendNotification = true;
+
+      try {
+        // Quick online check - if offline, definitely send
+        final partnerPresenceStatus = await PresenceService.instance
+            .isUserOnline(partnerId);
+        print(
+          '👥 Partner presence check: ${partnerPresenceStatus ? "Online" : "Offline"}',
+        );
+
+        if (!partnerPresenceStatus) {
+          print('✅ Partner is offline - sending notification');
+          shouldSendNotification = true;
+        } else {
+          // Partner is online, check if they're actively in this chat
+          final partnerDoc =
+              await FirebaseService.usersCollection.doc(partnerId).get();
+          if (partnerDoc.exists) {
+            final partnerData = partnerDoc.data() as Map<String, dynamic>;
+            final partnerActiveChatId = partnerData['activeChatId'] as String?;
+            final partnerIsInBackground =
+                partnerData['isAppInBackground'] as bool? ?? false;
+
+            // Send notification if partner is in background OR not in this specific chat
+            if (partnerIsInBackground || partnerActiveChatId != chatId) {
+              print(
+                '✅ Partner not actively viewing this chat - sending notification',
+              );
+              shouldSendNotification = true;
+            } else {
+              print(
+                '❌ Partner is actively viewing this chat - skipping notification',
+              );
+              shouldSendNotification = false;
+            }
+          }
+        }
+      } catch (e) {
+        print(
+          '⚠️ Error checking partner presence: $e - defaulting to send notification',
+        );
+        shouldSendNotification = true; // Default to sending on error
+      }
+
+      if (!shouldSendNotification) {
+        print('❌ Skipping notification - partner is actively viewing chat');
+        return;
+      }
+
+      // Send the notification
+      print('🚀 Proceeding to send notification...');
+
+      final success = await NotificationService.sendMessageNotification(
         recipientPlayerId: oneSignalPlayerId,
         senderName: senderName,
         message: message,
@@ -1197,57 +976,125 @@ class ChatService {
         senderId: senderId,
       );
 
-      print('✅ Enhanced notification sent to partner: $partnerName');
+      if (success) {
+        print(
+          '✅ Enhanced notification sent successfully to partner: $partnerName',
+        );
+      } else {
+        print('❌ Enhanced notification failed to send via normal method');
+
+        // FALLBACK: Try force send if normal send fails
+        print('🔄 Attempting force send as fallback...');
+        final forceSuccess = await NotificationService.forceSendNotification(
+          recipientPlayerId: oneSignalPlayerId,
+          senderName: senderName,
+          message: message,
+          chatId: chatId,
+          senderId: senderId,
+        );
+
+        if (forceSuccess) {
+          print('✅ Force notification sent successfully');
+        } else {
+          print('❌ Both normal and force notification failed');
+        }
+      }
     } catch (e) {
       print('❌ Error sending enhanced notification to partner: $e');
     }
   }
 
-  // NEW: Debug method to check notification setup
-  Future<void> debugNotificationSetup() async {
+  Future<Map<String, dynamic>?> getPartnerInfoForNotification(
+    String currentUserId,
+  ) async {
     try {
-      print('🔍 Debugging notification setup...');
+      print('🔍 Getting partner info for notification (no cooldown)');
 
-      final currentUserId = FirebaseService.currentUserId;
-      if (currentUserId == null) {
-        print('❌ No current user for debug');
-        return;
-      }
-
-      // Check current user OneSignal setup
+      // Get current user document
       final currentUserDoc =
           await FirebaseService.usersCollection.doc(currentUserId).get();
-      if (currentUserDoc.exists) {
-        final userData = currentUserDoc.data() as Map<String, dynamic>;
-        print(
-          '📋 Current user OneSignal player ID: ${userData['oneSignalPlayerId']}',
-        );
-        print(
-          '📋 Current user notification enabled: ${userData['notificationEnabled']}',
-        );
+
+      if (!currentUserDoc.exists) {
+        print('❌ Current user document not found: $currentUserId');
+        return null;
       }
 
-      // Check partner setup
-      final partnerInfo = await getPartnerInfo(currentUserId);
-      if (partnerInfo != null) {
-        print(
-          '📋 Partner OneSignal player ID: ${partnerInfo['oneSignalPlayerId']}',
-        );
-        print('📋 Partner name: ${partnerInfo['displayName']}');
-      } else {
-        print('❌ No partner info available');
+      final currentUserData = currentUserDoc.data() as Map<String, dynamic>;
+      final partnerId = currentUserData['partnerId'] as String?;
+
+      if (partnerId == null || partnerId.isEmpty) {
+        print('⚠️ No partner ID found for user: $currentUserId');
+        return null;
       }
 
-      // Check OneSignal service status
-      await NotificationService.debugUserPlayerIdMapping();
+      print('✅ Found partner ID: $partnerId');
+
+      // Get partner document
+      final partnerDoc =
+          await FirebaseService.usersCollection.doc(partnerId).get();
+
+      if (!partnerDoc.exists) {
+        print('❌ Partner document not found: $partnerId');
+        return null;
+      }
+
+      final partnerData = partnerDoc.data() as Map<String, dynamic>;
+      final oneSignalPlayerId = partnerData['oneSignalPlayerId'] as String?;
+
+      if (oneSignalPlayerId == null || oneSignalPlayerId.isEmpty) {
+        print('⚠️ Partner does not have OneSignal player ID: $partnerId');
+        return null;
+      }
+
+      print('✅ Partner has OneSignal player ID: $oneSignalPlayerId');
+
+      // Get partner's real-time presence status
+      bool isPartnerOnlineRealtime = false;
+      try {
+        isPartnerOnlineRealtime = await PresenceService.instance.isUserOnline(
+          partnerId,
+        );
+      } catch (e) {
+        print('⚠️ Error getting partner real-time presence: $e');
+      }
+
+      return {
+        'partnerId': partnerId,
+        'oneSignalPlayerId': oneSignalPlayerId,
+        'displayName': partnerData['displayName'] ?? 'Unknown',
+        'photoURL': partnerData['photoURL'],
+        'isOnline': partnerData['isOnline'] ?? false, // Firestore status
+        'isOnlineRealtime': isPartnerOnlineRealtime, // Real-time status
+        'lastSeen': partnerData['lastSeen'],
+        'activeChatId': partnerData['activeChatId'],
+        'appState': partnerData['appState'],
+        'isAppInBackground': partnerData['isAppInBackground'] ?? false,
+      };
     } catch (e) {
-      print('❌ Error in notification debug: $e');
+      print('❌ Error getting partner info for notification: $e');
+      return null;
     }
   }
 
-  // NEW: Get partner information with caching
-  Future<Map<String, dynamic>?> getPartnerInfo(String currentUserId) async {
+  // IMPROVED: Get partner information with better error handling and more details
+  Future<Map<String, dynamic>?> getPartnerInfoWithCooldown(
+    String currentUserId,
+  ) async {
     try {
+      // CHECK: Prevent continuous partner info checks
+      final now = DateTime.now();
+      final lastCheckTime = _lastPartnerInfoCheck[currentUserId];
+
+      if (lastCheckTime != null &&
+          now.difference(lastCheckTime) < _partnerInfoCooldown) {
+        // print(
+        //   '🔄 Skipping partner info check - cooldown active (${now.difference(lastCheckTime).inSeconds}s ago)',
+        // );
+        return null;
+      }
+
+      _lastPartnerInfoCheck[currentUserId] = now;
+
       print('🔍 Getting partner info for user: $currentUserId');
 
       // Get current user document
@@ -1288,13 +1135,27 @@ class ChatService {
 
       print('✅ Partner has OneSignal player ID: $oneSignalPlayerId');
 
+      // Get partner's real-time presence status
+      bool isPartnerOnlineRealtime = false;
+      try {
+        isPartnerOnlineRealtime = await PresenceService.instance.isUserOnline(
+          partnerId,
+        );
+      } catch (e) {
+        print('⚠️ Error getting partner real-time presence: $e');
+      }
+
       return {
         'partnerId': partnerId,
         'oneSignalPlayerId': oneSignalPlayerId,
         'displayName': partnerData['displayName'] ?? 'Unknown',
         'photoURL': partnerData['photoURL'],
-        'isOnline': partnerData['isOnline'] ?? false,
+        'isOnline': partnerData['isOnline'] ?? false, // Firestore status
+        'isOnlineRealtime': isPartnerOnlineRealtime, // Real-time status
         'lastSeen': partnerData['lastSeen'],
+        'activeChatId': partnerData['activeChatId'],
+        'appState': partnerData['appState'],
+        'isAppInBackground': partnerData['isAppInBackground'] ?? false,
       };
     } catch (e) {
       print('❌ Error getting partner info: $e');
@@ -1302,137 +1163,207 @@ class ChatService {
     }
   }
 
-  // NEW: Enhanced message sending with better notification logic
-  Future<bool> sendTextMessageEnhanced({
-    required String message,
-    String? chatId,
-  }) async {
+  // ADD: Method to test notification sending easily
+  Future<void> testNotificationToPartner() async {
     try {
-      print('🔍 Starting enhanced sendTextMessage...');
+      print('🧪 Testing notification to partner...');
 
-      if (!_isOnline) {
-        print('⚠️ Device is offline, queueing message');
-        await _queueOfflineMessage(message, chatId);
-        return false;
+      final currentUserId = FirebaseService.currentUserId;
+      if (currentUserId == null) {
+        print('❌ No current user for test');
+        return;
       }
 
-      final currentUser = FirebaseService.currentUser;
-      if (currentUser == null) {
-        print('❌ Current user is null');
-        throw Exception('User not authenticated');
+      final partnerInfo = await getPartnerInfoWithCooldown(currentUserId);
+      if (partnerInfo == null) {
+        print('❌ No partner info for test');
+        return;
       }
 
-      // Check if user can send messages
-      final canSend = await canInitializeChat();
-      if (!canSend) {
-        print('⚠️ User is not connected to a partner');
-        return false;
-      }
+      final oneSignalPlayerId = partnerInfo['oneSignalPlayerId'] as String;
+      final currentUserDoc =
+          await FirebaseService.usersCollection.doc(currentUserId).get();
+      final currentUserName =
+          currentUserDoc.exists
+              ? (currentUserDoc.data()
+                      as Map<String, dynamic>)['displayName'] ??
+                  'Test User'
+              : 'Test User';
 
-      final activeChatId = chatId ?? _activeChatId;
-      if (activeChatId == null) {
-        print('🔍 No active chat, trying to initialize...');
-        final newChatId = await initializeChatWithFallback();
-        if (newChatId == null) {
-          print('❌ Could not initialize chat');
-          throw Exception('No active chat and could not create one');
-        }
-
-        // Set active chat with notification integration
-        await setActiveChatIdWithNotification(newChatId);
-      }
-
-      // Generate message ID for tracking
-      final messageId = FirebaseService.generateMessageId();
-      print('🔍 Generated message ID: $messageId');
-
-      // Create message delivery completer
-      final deliveryCompleter = Completer<bool>();
-      _messageDeliveryCompleters[messageId] = deliveryCompleter;
-
-      // Send message to Firebase
-      print('🔍 Sending message to Firebase...');
-      await FirebaseService.sendMessage(
-        chatId: _activeChatId!,
-        message: message.trim(),
-        senderId: currentUser.uid,
-        senderName: currentUser.displayName ?? 'Unknown',
-        messageId: messageId,
+      // Force send test notification
+      final success = await NotificationService.forceSendNotification(
+        recipientPlayerId: oneSignalPlayerId,
+        senderName: currentUserName,
+        message:
+            '🧪 Test notification from ChatService - ${DateTime.now().toIso8601String()}',
+        chatId: _activeChatId ?? 'test_chat',
+        senderId: currentUserId,
       );
-      print('✅ Message sent to Firebase');
 
-      // Update last activity
-      await _updateLastActivity(_activeChatId!);
-      print('✅ Updated last activity');
-
-      // Send enhanced notification to partner
-      await _sendNotificationToPartner(
-        chatId: _activeChatId!,
-        message: message.trim(),
-        senderId: currentUser.uid,
-        senderName: currentUser.displayName ?? 'OnlyUs',
+      print(
+        success ? '✅ Test notification sent!' : '❌ Test notification failed!',
       );
-      print('✅ Enhanced notification sent');
+    } catch (e) {
+      print('❌ Error testing notification: $e');
+    }
+  }
 
-      // Clear typing status
-      await updateTypingStatus(false);
-      print('✅ Cleared typing status');
-
-      print('✅ Enhanced text message sent successfully with ID: $messageId');
-
-      // Wait for delivery confirmation with timeout
-      try {
-        await deliveryCompleter.future.timeout(const Duration(seconds: 10));
-        return true;
-      } catch (e) {
-        print('⚠️ Message delivery timeout, but message was sent');
-        return true;
+  // ADD: Debug method to check notification status
+  Future<void> debugNotificationStatus() async {
+    try {
+      final currentUserId = FirebaseService.currentUserId;
+      if (currentUserId == null) {
+        print('❌ No current user for debug');
+        return;
       }
-    } catch (e, stackTrace) {
-      print('❌ Error sending enhanced text message: $e');
-      print('📋 Stack trace: $stackTrace');
+
+      print('🔍 === NOTIFICATION DEBUG STATUS ===');
+
+      // Check current user OneSignal setup
+      final currentUserDoc =
+          await FirebaseService.usersCollection.doc(currentUserId).get();
+      if (currentUserDoc.exists) {
+        final userData = currentUserDoc.data() as Map<String, dynamic>;
+        print(
+          '📱 Current User OneSignal Player ID: ${userData['oneSignalPlayerId']}',
+        );
+        print('📱 Current User Name: ${userData['displayName']}');
+        print('📱 Notifications Enabled: ${userData['notificationEnabled']}');
+      }
+
+      // Check partner setup
+      final partnerInfo = await getPartnerInfo(currentUserId);
+      if (partnerInfo != null) {
+        print('👥 Partner ID: ${partnerInfo['partnerId']}');
+        print(
+          '👥 Partner OneSignal Player ID: ${partnerInfo['oneSignalPlayerId']}',
+        );
+        print('👥 Partner Name: ${partnerInfo['displayName']}');
+        print('👥 Partner Online (Firestore): ${partnerInfo['isOnline']}');
+        print(
+          '👥 Partner Online (Realtime): ${partnerInfo['isOnlineRealtime']}',
+        );
+        print('👥 Partner Active Chat: ${partnerInfo['activeChatId']}');
+        print('👥 Partner App State: ${partnerInfo['appState']}');
+        print('👥 Partner In Background: ${partnerInfo['isAppInBackground']}');
+      } else {
+        print('❌ No partner info available');
+      }
+
+      // Check active chat
+      print('💬 Current Active Chat: $_activeChatId');
+
+      // Check cooldown status
+      final lastCheck = _lastPartnerInfoCheck[currentUserId];
+      if (lastCheck != null) {
+        final timeSince = DateTime.now().difference(lastCheck);
+        print('⏰ Last partner info check: ${timeSince.inSeconds} seconds ago');
+      }
+
+      print('🔍 === END DEBUG STATUS ===');
+    } catch (e) {
+      print('❌ Error in notification debug: $e');
+    }
+  }
+
+  // LEGACY: Keep original method for backward compatibility
+  Future<Map<String, dynamic>?> getPartnerInfo(String currentUserId) async {
+    return await getPartnerInfoWithCooldown(currentUserId);
+  }
+
+  Future<void> setActiveChatIdWithNotification(String? chatId) async {
+    final currentUserId = FirebaseService.currentUserId;
+    if (currentUserId == null) return;
+
+    try {
+      // Update local state
+      _activeChatId = chatId;
+
+      // Update notification service
+      NotificationService.setActiveChatId(chatId);
+
+      // Update user's active chat in Firestore
+      await NotificationService.setUserActiveChatId(currentUserId, chatId);
+
+      // Clear unread count for this chat if opening it
+      if (chatId != null) {
+        await NotificationService.clearUnreadCount(currentUserId, chatId);
+        await markMessagesAsReadEnhanced(chatId: chatId);
+      }
+
+      // Set up message stream listener
+      if (chatId != null) {
+        await _setupMessageStreamListener(chatId);
+      }
+
+      print('✅ Active chat set with notification integration: $chatId');
+    } catch (e) {
+      print('❌ Error setting active chat with notification: $e');
+    }
+  }
+
+  // Offline message queueing
+  Future<void> _queueOfflineMessage(String message, String? chatId) async {
+    try {
+      // Store message locally for sending when online
+      print('📝 Queuing offline message: $message');
+      // Implementation for offline storage would go here
+    } catch (e) {
+      print('❌ Error queueing offline message: $e');
+    }
+  }
+
+  // Process queued offline messages when connection is restored
+  Future<void> _processOfflineMessages() async {
+    try {
+      // Process any queued offline messages
+      print('📤 Processing queued offline messages');
+      // Implementation for processing offline messages would go here
+    } catch (e) {
+      print('❌ Error processing offline messages: $e');
+    }
+  }
+
+  // Enhanced message caching
+  void cacheMessages(String chatId, List<MessageModel> messages) {
+    try {
+      _messageCache[chatId] = List.from(messages);
+      print('💾 Cached ${messages.length} messages for chat $chatId');
+    } catch (e) {
+      print('❌ Error caching messages: $e');
+    }
+  }
+
+  // Getters and utility methods
+  String? get activeChatId => _activeChatId;
+  bool get isOnline => _isOnline;
+
+  List<MessageModel> getCachedMessages({String? chatId}) {
+    final activeChatId = chatId ?? _activeChatId;
+    if (activeChatId == null) return [];
+    return List.from(_messageCache[activeChatId] ?? []);
+  }
+
+  bool isUserTyping(String userId) {
+    return _typingStatus[userId] ?? false;
+  }
+
+  // Enhanced connection status
+  Future<bool> checkConnectionHealth() async {
+    try {
+      // Try to read a small document from Firestore
+      await FirebaseService.chatsCollection
+          .limit(1)
+          .get()
+          .timeout(const Duration(seconds: 5));
+      return true;
+    } catch (e) {
+      print('❌ Connection health check failed: $e');
       return false;
     }
   }
 
-  // NEW: Method to handle when user enters chat screen
-  Future<void> onChatScreenEntered(String chatId) async {
-    try {
-      print('📱 User entered chat screen: $chatId');
-
-      // Set active chat with notification integration
-      await setActiveChatIdWithNotification(chatId);
-
-      // Mark messages as read
-      await markMessagesAsRead(chatId: chatId);
-
-      // Update user activity
-      await _updateLastActivity(chatId);
-
-      print('✅ Chat screen entry handled');
-    } catch (e) {
-      print('❌ Error handling chat screen entry: $e');
-    }
-  }
-
-  // NEW: Method to handle when user exits chat screen
-  Future<void> onChatScreenExited() async {
-    try {
-      print('📱 User exited chat screen');
-
-      // Clear active chat
-      await setActiveChatIdWithNotification(null);
-
-      // Clear typing status
-      await updateTypingStatus(false);
-
-      print('✅ Chat screen exit handled');
-    } catch (e) {
-      print('❌ Error handling chat screen exit: $e');
-    }
-  }
-
-  // NEW: Enhanced typing status with notification awareness
+  // RESTORED: Enhanced typing status with notification awareness
   Future<void> updateTypingStatusEnhanced(bool isTyping) async {
     try {
       final currentUserId = FirebaseService.currentUserId;
@@ -1469,7 +1400,226 @@ class ChatService {
     }
   }
 
-  // NEW: Check if partner is actively using the app
+  // RESTORED: Debug method to check notification setup
+  Future<void> debugNotificationSetup() async {
+    try {
+      print('🔍 Debugging notification setup...');
+
+      final currentUserId = FirebaseService.currentUserId;
+      if (currentUserId == null) {
+        print('❌ No current user for debug');
+        return;
+      }
+
+      // Check current user OneSignal setup
+      final currentUserDoc =
+          await FirebaseService.usersCollection.doc(currentUserId).get();
+      if (currentUserDoc.exists) {
+        final userData = currentUserDoc.data() as Map<String, dynamic>;
+        print(
+          '📋 Current user OneSignal player ID: ${userData['oneSignalPlayerId']}',
+        );
+        print(
+          '📋 Current user notification enabled: ${userData['notificationEnabled']}',
+        );
+      }
+
+      // Check partner setup
+      final partnerInfo = await getPartnerInfo(currentUserId);
+      if (partnerInfo != null) {
+        print(
+          '📋 Partner OneSignal player ID: ${partnerInfo['oneSignalPlayerId']}',
+        );
+        print('📋 Partner name: ${partnerInfo['displayName']}');
+      } else {
+        print('❌ No partner info available');
+      }
+
+      // // Check OneSignal service status
+      // await NotificationService.debugUserPlayerIdMapping();
+    } catch (e) {
+      print('❌ Error in notification debug: $e');
+    }
+  }
+
+  // RESTORED: Method to handle when user enters chat screen
+  Future<void> onChatScreenEntered(String chatId) async {
+    try {
+      print('📱 User entered chat screen: $chatId');
+
+      // Set active chat with notification integration
+      await setActiveChatIdWithNotification(chatId);
+
+      // Mark messages as read with cooldown
+      await markMessagesAsReadEnhanced(chatId: chatId);
+
+      // Update user activity
+      await _updateLastActivity(chatId);
+
+      print('✅ Chat screen entry handled');
+    } catch (e) {
+      print('❌ Error handling chat screen entry: $e');
+    }
+  }
+
+  // RESTORED: Method to handle when user exits chat screen
+  Future<void> onChatScreenExited() async {
+    try {
+      print('📱 User exited chat screen');
+
+      // Clear active chat
+      await setActiveChatIdWithNotification(null);
+
+      // Clear typing status
+      await updateTypingStatus(false);
+
+      print('✅ Chat screen exit handled');
+    } catch (e) {
+      print('❌ Error handling chat screen exit: $e');
+    }
+  }
+
+  // ADD this method for automatic read receipts
+  Future<void> checkAndUpdateMessageStatuses() async {
+    try {
+      final currentUserId = FirebaseService.currentUserId;
+      if (currentUserId == null || _activeChatId == null) return;
+
+      print('🔍 Checking message statuses for user: $currentUserId');
+
+      // FIXED: Only mark messages as read that were SENT TO current user (not BY current user)
+      final unreadReceivedQuery =
+          await FirebaseService.getMessagesCollection(_activeChatId!)
+              .where(
+                'senderId',
+                isNotEqualTo: currentUserId,
+              ) // Messages NOT sent by current user
+              .where('isRead', isEqualTo: false) // That are unread
+              .where('isDeleted', isEqualTo: false) // And not deleted
+              .get();
+
+      if (unreadReceivedQuery.docs.isNotEmpty) {
+        print(
+          '📖 Found ${unreadReceivedQuery.docs.length} unread received messages to mark as read',
+        );
+
+        final batch = FirebaseService.firestore.batch();
+
+        for (final doc in unreadReceivedQuery.docs) {
+          batch.update(doc.reference, {
+            'isRead': true,
+            'readAt': FieldValue.serverTimestamp(),
+            'readBy': currentUserId,
+            'deliveryStatus': 'read',
+          });
+        }
+
+        await batch.commit();
+        print(
+          '✅ Updated ${unreadReceivedQuery.docs.length} received messages to read status',
+        );
+      } else {
+        // Don't spam logs when there are no unread messages
+        // print('✅ No unread received messages found');
+      }
+
+      // SEPARATE: Update delivery status for messages sent BY current user (but don't mark them as read)
+      await _updateSentMessageDeliveryStatus(currentUserId);
+    } catch (e) {
+      print('❌ Error checking and updating message statuses: $e');
+    }
+  }
+
+  Future<void> _updateSentMessageDeliveryStatus(String currentUserId) async {
+    try {
+      // Get partner info
+      final partnerInfo = await getPartnerInfo(currentUserId);
+      if (partnerInfo == null) return;
+
+      final partnerId = partnerInfo['partnerId'] as String;
+
+      // Check if partner is online and in same chat
+      final partnerDoc =
+          await FirebaseService.usersCollection.doc(partnerId).get();
+      if (!partnerDoc.exists) return;
+
+      final partnerData = partnerDoc.data() as Map<String, dynamic>;
+      final partnerActiveChat = partnerData['activeChatId'] as String?;
+      final isPartnerOnline = await PresenceService.instance.isUserOnline(
+        partnerId,
+      );
+
+      // If partner is online and in same chat, update delivery status for sent messages
+      if (isPartnerOnline && partnerActiveChat == _activeChatId) {
+        final undeliveredSentMessages =
+            await FirebaseService.getMessagesCollection(_activeChatId!)
+                .where(
+                  'senderId',
+                  isEqualTo: currentUserId,
+                ) // Messages sent BY current user
+                .where(
+                  'deliveryStatus',
+                  whereIn: ['sending', 'sent'],
+                ) // Not yet delivered
+                .get();
+
+        if (undeliveredSentMessages.docs.isNotEmpty) {
+          final batch = FirebaseService.firestore.batch();
+
+          for (final doc in undeliveredSentMessages.docs) {
+            batch.update(doc.reference, {
+              'deliveryStatus': 'delivered',
+              'deliveredAt': FieldValue.serverTimestamp(),
+            });
+          }
+
+          await batch.commit();
+          print(
+            '✅ Updated ${undeliveredSentMessages.docs.length} sent messages to delivered status',
+          );
+        }
+      }
+    } catch (e) {
+      print('❌ Error updating sent message delivery status: $e');
+    }
+  }
+
+  // ADD this enhanced method for entering chat
+  Future<void> onChatScreenEnteredEnhanced(String chatId) async {
+    try {
+      print('📱 User entered chat screen: $chatId');
+
+      // Set active chat
+      _activeChatId = chatId;
+
+      // Update user's active chat in Firestore
+      final currentUserId = FirebaseService.currentUserId;
+      if (currentUserId != null) {
+        await FirebaseService.usersCollection.doc(currentUserId).update({
+          'activeChatId': chatId,
+          'lastActiveInChat': FieldValue.serverTimestamp(),
+        });
+
+        // Set in notification service
+        await NotificationService.setUserActiveChatId(currentUserId, chatId);
+      }
+
+      // Mark messages as read with cooldown
+      await markMessagesAsReadEnhanced(chatId: chatId);
+
+      // Update last activity
+      await _updateLastActivity(chatId);
+
+      // Check for auto-read receipts
+      await checkAndUpdateMessageStatuses();
+
+      print('✅ Chat screen entry handled');
+    } catch (e) {
+      print('❌ Error handling chat screen entry: $e');
+    }
+  }
+
+  // RESTORED: Check if partner is actively using the app
   Future<bool> isPartnerActiveInApp(String partnerId) async {
     try {
       // Check online status using presence service
@@ -1495,7 +1645,7 @@ class ChatService {
     }
   }
 
-  // NEW: Get notification statistics
+  // RESTORED: Get notification statistics
   Future<Map<String, dynamic>> getNotificationStats() async {
     try {
       final currentUserId = FirebaseService.currentUserId;
@@ -1522,128 +1672,41 @@ class ChatService {
     }
   }
 
-  Future<bool> _isPartnerActiveInChat(String partnerId, String chatId) async {
+  Future<bool> sendTextMessageWithReadReceipts({
+    required String message,
+    String? chatId,
+  }) async {
     try {
-      // Check if partner was recently active (within last 30 seconds)
-      final partnerDoc =
-          await FirebaseService.usersCollection.doc(partnerId).get();
-      if (!partnerDoc.exists) return false;
+      // First send the message normally
+      final success = await sendTextMessage(message: message, chatId: chatId);
 
-      final partnerData = partnerDoc.data() as Map<String, dynamic>;
-      final lastSeen = partnerData['lastSeen'] as Timestamp?;
+      if (success && _activeChatId != null) {
+        // Check if partner is currently active in this chat
+        final partnerInfo = await getPartnerInfo(
+          FirebaseService.currentUserId!,
+        );
+        if (partnerInfo != null) {
+          final partnerId = partnerInfo['partnerId'] as String;
 
-      if (lastSeen == null) return false;
+          // Check partner's active chat
+          final partnerDoc =
+              await FirebaseService.usersCollection.doc(partnerId).get();
+          if (partnerDoc.exists) {
+            final partnerData = partnerDoc.data() as Map<String, dynamic>;
+            final partnerActiveChat = partnerData['activeChatId'] as String?;
 
-      final now = DateTime.now();
-      final lastSeenTime = lastSeen.toDate();
-      final difference = now.difference(lastSeenTime);
-
-      // Consider active if last seen within 30 seconds
-      return difference.inSeconds < 30;
-    } catch (e) {
-      print('❌ Error checking partner activity: $e');
-      return false;
-    }
-  }
-
-  // Offline message queueing
-  Future<void> _queueOfflineMessage(String message, String? chatId) async {
-    try {
-      // Store message locally for sending when online
-      // You can implement this using local storage like Hive or SharedPreferences
-      print('📝 Queuing offline message: $message');
-
-      // For now, we'll just cache it in memory
-      // In production, you should persist this to local storage
-      // You can implement proper offline message storage here
-    } catch (e) {
-      print('❌ Error queueing offline message: $e');
-    }
-  }
-
-  // Process queued offline messages when connection is restored
-  Future<void> _processOfflineMessages() async {
-    try {
-      // Process any queued offline messages
-      // Implementation depends on your local storage choice
-      print('📤 Processing queued offline messages');
-    } catch (e) {
-      print('❌ Error processing offline messages: $e');
-    }
-  }
-
-  // Enhanced message caching
-  void cacheMessages(String chatId, List<MessageModel> messages) {
-    try {
-      _messageCache[chatId] = List.from(messages);
-
-      // You can also persist to local storage here
-      // Example:
-      // await _localStorage.setMessages(chatId, messages);
-
-      print('💾 Cached ${messages.length} messages for chat $chatId');
-    } catch (e) {
-      print('❌ Error caching messages: $e');
-    }
-  }
-
-  // Getters and utility methods
-  String? get activeChatId => _activeChatId;
-  bool get isOnline => _isOnline;
-
-  List<MessageModel> getCachedMessages({String? chatId}) {
-    final activeChatId = chatId ?? _activeChatId;
-    if (activeChatId == null) return [];
-    return List.from(_messageCache[activeChatId] ?? []);
-  }
-
-  bool isUserTyping(String userId) {
-    return _typingStatus[userId] ?? false;
-  }
-
-  // Enhanced connection status
-  Future<bool> checkConnectionHealth() async {
-    try {
-      // Try to read a small document from Firestore
-      await FirebaseService.chatsCollection
-          .limit(1)
-          .get()
-          .timeout(const Duration(seconds: 5));
-      return true;
-    } catch (e) {
-      print('❌ Connection health check failed: $e');
-      return false;
-    }
-  }
-
-  Future<void> setActiveChatIdWithNotification(String? chatId) async {
-    final currentUserId = FirebaseService.currentUserId;
-    if (currentUserId == null) return;
-
-    try {
-      // Update local state
-      _activeChatId = chatId;
-
-      // Update notification service
-      NotificationService.setActiveChatId(chatId);
-
-      // Update user's active chat in Firestore
-      await NotificationService.setUserActiveChatId(currentUserId, chatId);
-
-      // Clear unread count for this chat if opening it
-      if (chatId != null) {
-        await NotificationService.clearUnreadCount(currentUserId, chatId);
-        await markMessagesAsRead(chatId: chatId);
+            // If partner is in this chat, their messages should be marked as read
+            if (partnerActiveChat == _activeChatId) {
+              await markMessagesAsReadEnhanced(chatId: _activeChatId);
+            }
+          }
+        }
       }
 
-      // Set up message stream listener
-      if (chatId != null) {
-        await _setupMessageStreamListener(chatId);
-      }
-
-      print('✅ Active chat set with notification integration: $chatId');
+      return success;
     } catch (e) {
-      print('❌ Error setting active chat with notification: $e');
+      print('❌ Error sending message with read receipts: $e');
+      return false;
     }
   }
 
@@ -1675,9 +1738,11 @@ class ChatService {
     });
     _messageDeliveryCompleters.clear();
 
-    // Clear caches
+    // Clear caches and cooldown maps
     _typingStatus.clear();
     _messageCache.clear();
+    _lastReadMarkTime.clear();
+    _lastPartnerInfoCheck.clear();
     _activeChatId = null;
   }
 
@@ -1696,6 +1761,321 @@ class ChatService {
       'cachedChats': _messageCache.length,
       'typingUsers': _typingStatus.length,
       'pendingDeliveries': _messageDeliveryCompleters.length,
+      'readMarkCooldowns': _lastReadMarkTime.length,
+      'partnerInfoCooldowns': _lastPartnerInfoCheck.length,
     };
   }
+
+  Future<void> checkForMissedMessages() async {
+    try {
+      print('🔍 Checking for missed messages...');
+
+      final currentUserId = FirebaseService.currentUserId;
+      if (currentUserId == null || _activeChatId == null) {
+        print('⚠️ No user ID or active chat for missed messages check');
+        return;
+      }
+
+      // Get the last time user checked messages
+      final userDoc =
+          await FirebaseService.usersCollection.doc(currentUserId).get();
+      if (!userDoc.exists) return;
+
+      final userData = userDoc.data() as Map<String, dynamic>;
+      final lastReadData = userData['lastReadAt'] as Map<String, dynamic>?;
+      final lastReadTimestamp = lastReadData?[_activeChatId] as Timestamp?;
+
+      if (lastReadTimestamp == null) {
+        print('⚠️ No last read timestamp found');
+        return;
+      }
+
+      final lastReadTime = lastReadTimestamp.toDate();
+
+      // Query messages received after last read time
+      final missedMessagesQuery =
+          await FirebaseService.getMessagesCollection(_activeChatId!)
+              .where('timestamp', isGreaterThan: lastReadTimestamp)
+              .where('senderId', isNotEqualTo: currentUserId)
+              .where('isDeleted', isEqualTo: false)
+              .orderBy('timestamp', descending: false)
+              .get();
+
+      final missedCount = missedMessagesQuery.docs.length;
+
+      if (missedCount > 0) {
+        print(
+          '📨 Found $missedCount missed messages since ${lastReadTime.toString()}',
+        );
+
+        // Mark them as read
+        await markMessagesAsReadEnhanced(chatId: _activeChatId);
+
+        // Clear any notifications for this chat
+        await NotificationService.clearUnreadCount(
+          currentUserId,
+          _activeChatId!,
+        );
+
+        // Refresh the message stream to ensure UI updates
+        await refreshMessagesStream(chatId: _activeChatId);
+      } else {
+        print('✅ No missed messages found');
+      }
+
+      // Update last activity
+      await _updateLastActivity(_activeChatId!);
+    } catch (e) {
+      print('❌ Error checking for missed messages: $e');
+    }
+  }
+
+  // Add this helper method to ChatService if not already present:
+  Future<int> getMissedMessageCount() async {
+    try {
+      final currentUserId = FirebaseService.currentUserId;
+      if (currentUserId == null || _activeChatId == null) return 0;
+
+      final userDoc =
+          await FirebaseService.usersCollection.doc(currentUserId).get();
+      if (!userDoc.exists) return 0;
+
+      final userData = userDoc.data() as Map<String, dynamic>;
+      final unreadChats = userData['unreadChats'] as Map<String, dynamic>?;
+
+      if (unreadChats == null) return 0;
+
+      final unreadCount = unreadChats[_activeChatId] as int? ?? 0;
+      return unreadCount;
+    } catch (e) {
+      print('❌ Error getting missed message count: $e');
+      return 0;
+    }
+  }
+
+  // Add these methods to your ChatService class
+
+// Get favorite chats for current user
+Future<List<String>> getFavoriteChats() async {
+  try {
+    final currentUserId = FirebaseService.currentUserId;
+    if (currentUserId == null) return [];
+
+    final userDoc = await FirebaseService.usersCollection
+        .doc(currentUserId)
+        .get();
+
+    if (!userDoc.exists) return [];
+
+    final data = userDoc.data() as Map<String, dynamic>;
+    return List<String>.from(data['favoriteChats'] ?? []);
+  } catch (e) {
+    print('❌ Error getting favorite chats: $e');
+    return [];
+  }
+}
+
+// Add chat to favorites
+Future<bool> addToFavorites(String chatId) async {
+  try {
+    final currentUserId = FirebaseService.currentUserId;
+    if (currentUserId == null) return false;
+
+    final userRef = FirebaseService.usersCollection.doc(currentUserId);
+    
+    await userRef.update({
+      'favoriteChats': FieldValue.arrayUnion([chatId])
+    });
+
+    return true;
+  } catch (e) {
+    print('❌ Error adding to favorites: $e');
+    return false;
+  }
+}
+
+// Remove chat from favorites
+Future<bool> removeFromFavorites(String chatId) async {
+  try {
+    final currentUserId = FirebaseService.currentUserId;
+    if (currentUserId == null) return false;
+
+    final userRef = FirebaseService.usersCollection.doc(currentUserId);
+    
+    await userRef.update({
+      'favoriteChats': FieldValue.arrayRemove([chatId])
+    });
+
+    return true;
+  } catch (e) {
+    print('❌ Error removing from favorites: $e');
+    return false;
+  }
+}
+
+// Check if chat is favorited
+Future<bool> isChatFavorited(String chatId) async {
+  try {
+    final favoriteChats = await getFavoriteChats();
+    return favoriteChats.contains(chatId);
+  } catch (e) {
+    print('❌ Error checking if chat is favorited: $e');
+    return false;
+  }
+}
+
+
+// Get partner user stream for real-time updates
+Stream<UserModel?> getPartnerUserStream(String currentUserId) {
+  return getPartnerInfo(currentUserId).asStream().asyncExpand((partnerInfo) {
+    if (partnerInfo == null) return Stream.value(null);
+    
+    final partnerId = partnerInfo['partnerId'] as String;
+    
+    return FirebaseService.usersCollection
+        .doc(partnerId)
+        .snapshots()
+        .map((snapshot) {
+          if (!snapshot.exists) return null;
+          
+          final data = snapshot.data() as Map<String, dynamic>;
+          return UserModel.fromMap(data, snapshot.id);
+        });
+  }).handleError((error) {
+    print('❌ Partner user stream error: $error');
+    return null;
+  });
+}
+
+// Add these methods to your ChatService class
+
+// Toggle message favorite status
+Future<bool> toggleMessageFavorite(String chatId, String messageId) async {
+  try {
+    final currentUserId = FirebaseService.currentUserId;
+    if (currentUserId == null) return false;
+
+    final messageRef = FirebaseService.getMessagesCollection(chatId).doc(messageId);
+    final messageDoc = await messageRef.get();
+    
+    if (!messageDoc.exists) return false;
+
+    final messageData = messageDoc.data() as Map<String, dynamic>;
+    List<String> favoritedBy = List<String>.from(messageData['favoritedBy'] ?? []);
+    
+    bool isFavorited = favoritedBy.contains(currentUserId);
+    
+    if (isFavorited) {
+      // Remove from favorites
+      favoritedBy.remove(currentUserId);
+    } else {
+      // Add to favorites
+      favoritedBy.add(currentUserId);
+    }
+    
+    await messageRef.update({
+      'favoritedBy': favoritedBy,
+      'isFavorited': favoritedBy.isNotEmpty,
+    });
+
+    print('✅ Message favorite toggled: ${!isFavorited}');
+    return true;
+  } catch (e) {
+    print('❌ Error toggling message favorite: $e');
+    return false;
+  }
+}
+
+// Check if message is favorited by current user
+Future<bool> isMessageFavorited(String chatId, String messageId) async {
+  try {
+    final currentUserId = FirebaseService.currentUserId;
+    if (currentUserId == null) return false;
+
+    final messageDoc = await FirebaseService.getMessagesCollection(chatId).doc(messageId).get();
+    
+    if (!messageDoc.exists) return false;
+
+    final messageData = messageDoc.data() as Map<String, dynamic>;
+    final favoritedBy = List<String>.from(messageData['favoritedBy'] ?? []);
+    
+    return favoritedBy.contains(currentUserId);
+  } catch (e) {
+    print('❌ Error checking message favorite status: $e');
+    return false;
+  }
+}
+
+// Get all favorited messages for current user
+Future<List<MessageModel>> getFavoritedMessages() async {
+  try {
+    final currentUserId = FirebaseService.currentUserId;
+    if (currentUserId == null) return [];
+
+    // Get all chats where user is participant
+    final chatsQuery = await FirebaseService.chatsCollection
+        .where('participants', arrayContains: currentUserId)
+        .get();
+
+    List<MessageModel> favoritedMessages = [];
+
+    // For each chat, get favorited messages
+    for (final chatDoc in chatsQuery.docs) {
+      final chatId = chatDoc.id;
+      
+      final messagesQuery = await FirebaseService.getMessagesCollection(chatId)
+          .where('favoritedBy', arrayContains: currentUserId)
+          .orderBy('timestamp', descending: true)
+          .get();
+
+      for (final messageDoc in messagesQuery.docs) {
+        final message = MessageModel.fromFirestore(messageDoc);
+        favoritedMessages.add(message);
+      }
+    }
+
+    // Sort all favorited messages by timestamp
+    favoritedMessages.sort((a, b) => b.timestamp.compareTo(a.timestamp));
+
+    print('✅ Found ${favoritedMessages.length} favorited messages');
+    return favoritedMessages;
+  } catch (e) {
+    print('❌ Error getting favorited messages: $e');
+    return [];
+  }
+}
+
+// Get favorited messages stream for real-time updates
+Stream<List<MessageModel>> getFavoritedMessagesStream() {
+  final currentUserId = FirebaseService.currentUserId;
+  if (currentUserId == null) return Stream.value([]);
+
+  return FirebaseService.chatsCollection
+      .where('participants', arrayContains: currentUserId)
+      .snapshots()
+      .asyncMap((chatsSnapshot) async {
+        List<MessageModel> allFavoritedMessages = [];
+
+        for (final chatDoc in chatsSnapshot.docs) {
+          final chatId = chatDoc.id;
+          
+          try {
+            final messagesQuery = await FirebaseService.getMessagesCollection(chatId)
+                .where('favoritedBy', arrayContains: currentUserId)
+                .get();
+
+            for (final messageDoc in messagesQuery.docs) {
+              final message = MessageModel.fromFirestore(messageDoc);
+              allFavoritedMessages.add(message);
+            }
+          } catch (e) {
+            print('❌ Error getting favorited messages for chat $chatId: $e');
+          }
+        }
+
+        // Sort by timestamp
+        allFavoritedMessages.sort((a, b) => b.timestamp.compareTo(a.timestamp));
+        return allFavoritedMessages;
+      });
+}
 }

@@ -1,9 +1,13 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_database/firebase_database.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:onlyus/core/services/couple_code_serivce.dart';
+import 'package:onlyus/core/services/notification_service.dart';
 import 'package:onlyus/screens/reconection_request_screen.dart';
 import 'package:share_plus/share_plus.dart';
 
@@ -62,16 +66,51 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
     );
 
     _animationController.forward();
-   // Load connection history when screen opens
-  WidgetsBinding.instance.addPostFrameCallback((_) {
-    _loadConnectionHistory();
-  });
-}
+
+    // Load connection history when screen opens
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _loadConnectionHistory();
+      _loadUserPreferences(); // Add this line
+    });
+  }
+
   @override
   void dispose() {
     _animationController.dispose();
     _nameController.dispose();
     super.dispose();
+  }
+
+  Future<void> _loadUserPreferences() async {
+    try {
+      final currentUser =
+          ref.read(authControllerProvider.notifier).currentFirebaseUser;
+      if (currentUser?.uid != null) {
+        final userDoc =
+            await FirebaseFirestore.instance
+                .collection('users')
+                .doc(currentUser!.uid)
+                .get();
+
+        if (userDoc.exists && mounted) {
+          final userData = userDoc.data() as Map<String, dynamic>;
+
+          // Load privacy settings from nested structure
+          final privacySettings =
+              userData['privacySettings'] as Map<String, dynamic>? ?? {};
+
+          setState(() {
+            _notificationsEnabled = userData['notificationEnabled'] ?? true;
+            _soundEnabled = userData['soundEnabled'] ?? true;
+            _vibrationEnabled = userData['vibrationEnabled'] ?? true;
+            _showOnlineStatus = privacySettings['showOnlineStatus'] ?? true;
+            _showLastSeen = privacySettings['showLastSeen'] ?? true;
+          });
+        }
+      }
+    } catch (e) {
+      print('❌ Error loading user preferences: $e');
+    }
   }
 
   Future<void> _updateProfileImage() async {
@@ -449,275 +488,182 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen>
     );
   }
 
+  // recovery code
 
-// recovery code
+  Future<void> _loadConnectionHistory() async {
+    if (!mounted) return;
 
-Future<void> _loadConnectionHistory() async {
-  if (!mounted) return;
-  
-  setState(() => _loadingHistory = true);
-  
-  try {
-    final currentUser = ref.read(authControllerProvider.notifier).currentFirebaseUser;
-    if (currentUser?.email != null) {
-      final history = await CoupleCodeService.instance.getConnectionHistoryByEmail(
-        currentUser!.email!,
-      );
-      
+    setState(() => _loadingHistory = true);
+
+    try {
+      final currentUser =
+          ref.read(authControllerProvider.notifier).currentFirebaseUser;
+      if (currentUser?.email != null) {
+        final history = await CoupleCodeService.instance
+            .getConnectionHistoryByEmail(currentUser!.email!);
+
+        if (mounted) {
+          setState(() {
+            _connectionHistory = history;
+            _loadingHistory = false;
+          });
+        }
+      }
+    } catch (e) {
+      print('❌ Error loading connection history: $e');
       if (mounted) {
-        setState(() {
-          _connectionHistory = history;
-          _loadingHistory = false;
-        });
+        setState(() => _loadingHistory = false);
       }
     }
-  } catch (e) {
-    print('❌ Error loading connection history: $e');
-    if (mounted) {
-      setState(() => _loadingHistory = false);
-    }
   }
-}
 
-// Add this method to handle reconnection
-Future<void> _requestReconnection(Map<String, dynamic> connection) async {
+  // Update this method in your ProfileScreen
+Future<void> _updateNotificationSettings(bool enabled) async {
   try {
-    final currentUserId = ref.read(authControllerProvider.notifier).currentUserId;
-    if (currentUserId == null) return;
-    
-    final result = await CoupleCodeService.instance.requestReconnection(
-      connection['userEmail'],
-      connection['id'],
-      currentUserId,
-    );
-    
-    if (result.isSuccess) {
-      _showSuccessMessage(result.message);
-    } else {
-      _showErrorMessage(result.message);
+    setState(() => _notificationsEnabled = enabled);
+
+    final currentUser = ref.read(authControllerProvider.notifier).currentFirebaseUser;
+    if (currentUser?.uid != null) {
+      // 🔥 NEW: Use the enhanced notification preference update
+      await NotificationService.updateNotificationPreference(
+        currentUser!.uid, 
+        enabled
+      );
+
+      _showSuccessMessage(
+        enabled ? 'Notifications enabled' : 'Notifications disabled'
+      );
     }
   } catch (e) {
-    _showErrorMessage('Failed to request reconnection: $e');
+    // Revert local change on error
+    setState(() => _notificationsEnabled = !enabled);
+    _showErrorMessage('Failed to update notification settings: $e');
   }
 }
+  Future<void> _updateSoundSettings(bool enabled) async {
+    try {
+      setState(() => _soundEnabled = enabled);
 
-// Add this method to delete connection history
-Future<void> _deleteConnectionHistory(Map<String, dynamic> connection) async {
-  try {
-    await CoupleCodeService.instance.deleteConnectionHistory(
-      connection['userEmail'],
-      connection['id'],
-    );
-    
-    _showSuccessMessage('Connection history deleted');
-    _loadConnectionHistory(); // Refresh the list
-  } catch (e) {
-    _showErrorMessage('Failed to delete connection: $e');
+      final currentUser =
+          ref.read(authControllerProvider.notifier).currentFirebaseUser;
+      if (currentUser?.uid != null) {
+        await FirebaseFirestore.instance
+            .collection('users')
+            .doc(currentUser!.uid)
+            .update({
+              'soundEnabled': enabled,
+              'updatedAt': FieldValue.serverTimestamp(),
+            });
+
+        _showSuccessMessage(enabled ? 'Sound enabled' : 'Sound disabled');
+      }
+    } catch (e) {
+      // Revert local change on error
+      setState(() => _soundEnabled = !enabled);
+      _showErrorMessage('Failed to update sound settings: $e');
+    }
   }
-}
 
-// Add this widget to build current couple code section
-Widget _buildCurrentCoupleCodeSection(UserModel user) {
-  return Container(
-    padding: const EdgeInsets.all(20),
-    decoration: BoxDecoration(
-      color: Colors.white.withOpacity(0.9),
-      borderRadius: BorderRadius.circular(20),
-      border: Border.all(color: AppColors.primaryRose.withOpacity(0.3)),
-      boxShadow: [
-        BoxShadow(
-          color: AppColors.primaryDeepRose.withOpacity(0.1),
-          blurRadius: 15,
-          spreadRadius: 3,
-        ),
-      ],
-    ),
-    child: Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Row(
-          children: [
-            Container(
-              padding: const EdgeInsets.all(10),
-              decoration: BoxDecoration(
-                color: AppColors.primaryRose.withOpacity(0.2),
-                borderRadius: BorderRadius.circular(10),
-              ),
-              child: const Icon(
-                Icons.favorite,
-                color: AppColors.primaryDeepRose,
-                size: 20,
-              ),
-            ),
-            const SizedBox(width: 16),
-            const Expanded(
-              child: Text(
-                'Your Couple Code',
-                style: TextStyle(
-                  fontSize: 18,
-                  fontWeight: FontWeight.w600,
-                  color: AppColors.textPrimary,
-                ),
-              ),
-            ),
-          ],
-        ),
-        
-        const SizedBox(height: 16),
-        
-        // Show current couple code if user has one
-        FutureBuilder<String?>(
-          future: CoupleCodeService.instance.getUserCoupleCode(user.uid),
-          builder: (context, snapshot) {
-            if (snapshot.connectionState == ConnectionState.waiting) {
-              return const Center(child: CircularProgressIndicator());
-            }
-            
-            final coupleCode = snapshot.data;
-            if (coupleCode != null && coupleCode.isNotEmpty) {
-              return Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    colors: [
-                      AppColors.primaryDeepRose.withOpacity(0.1),
-                      AppColors.secondaryDeepPurple.withOpacity(0.1),
-                    ],
-                  ),
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(
-                    color: AppColors.primaryDeepRose.withOpacity(0.3),
-                  ),
-                ),
-                child: Column(
-                  children: [
-                    Text(
-                      CoupleCodeService.formatCodeForDisplay(coupleCode),
-                      style: const TextStyle(
-                        fontSize: 24,
-                        fontWeight: FontWeight.bold,
-                        color: AppColors.primaryDeepRose,
-                        letterSpacing: 2,
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      user.isConnected 
-                          ? 'Connected with ${user.partnerName ?? "your partner"}'
-                          : 'Share this code with your partner',
-                      style: const TextStyle(
-                        fontSize: 12,
-                        color: AppColors.textSecondary,
-                      ),
-                      textAlign: TextAlign.center,
-                    ),
-                    if (!user.isConnected) ...[
-                      const SizedBox(height: 12),
-                      Row(
-                        children: [
-                          Expanded(
-                            child: ElevatedButton.icon(
-                              onPressed: () async {
-                                await Clipboard.setData(ClipboardData(text: coupleCode));
-                                _showSuccessMessage('Code copied to clipboard!');
-                              },
-                              icon: const Icon(Icons.copy, size: 16),
-                              label: const Text('Copy'),
-                              style: ElevatedButton.styleFrom(
-                                backgroundColor: AppColors.primaryDeepRose,
-                                foregroundColor: Colors.white,
-                                padding: const EdgeInsets.symmetric(vertical: 8),
-                                shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(8),
-                                ),
-                              ),
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            child: ElevatedButton.icon(
-                              onPressed: () async {
-                                final shareText = '''💕 Hey! Download OnlyUs and enter our couple code to connect:
+  Future<void> _updateVibrationSettings(bool enabled) async {
+    try {
+      setState(() => _vibrationEnabled = enabled);
 
-🔐 ${CoupleCodeService.formatCodeForDisplay(coupleCode)}
+      final currentUser =
+          ref.read(authControllerProvider.notifier).currentFirebaseUser;
+      if (currentUser?.uid != null) {
+        await FirebaseFirestore.instance
+            .collection('users')
+            .doc(currentUser!.uid)
+            .update({
+              'vibrationEnabled': enabled,
+              'updatedAt': FieldValue.serverTimestamp(),
+            });
 
-OnlyUs - Just for the two of us ❤️''';
-                                await Share.share(shareText);
-                              },
-                              icon: const Icon(Icons.share, size: 16),
-                              label: const Text('Share'),
-                              style: ElevatedButton.styleFrom(
-                                backgroundColor: AppColors.secondaryDeepPurple,
-                                foregroundColor: Colors.white,
-                                padding: const EdgeInsets.symmetric(vertical: 8),
-                                shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(8),
-                                ),
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ],
-                  ],
-                ),
-              );
-            } else {
-              return Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: AppColors.primaryRose.withOpacity(0.1),
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(
-                    color: AppColors.primaryRose.withOpacity(0.3),
-                  ),
-                ),
-                child: const Text(
-                  'No couple code yet. Generate one to connect with your partner.',
-                  style: TextStyle(
-                    color: AppColors.textSecondary,
-                  ),
-                  textAlign: TextAlign.center,
-                ),
-              );
-            }
-          },
-        ),
-      ],
-    ),
-  );
-}
+        _showSuccessMessage(
+          enabled ? 'Vibration enabled' : 'Vibration disabled',
+        );
+      }
+    } catch (e) {
+      setState(() => _vibrationEnabled = !enabled);
+      _showErrorMessage('Failed to update vibration settings: $e');
+    }
+  }
 
-// Add this widget to build connection history section
-Widget _buildConnectionHistorySection() {
-  return Container(
-    decoration: BoxDecoration(
-      color: Colors.white.withOpacity(0.9),
-      borderRadius: BorderRadius.circular(20),
-      border: Border.all(color: AppColors.primaryRose.withOpacity(0.3)),
-    ),
-    child: Column(
-      children: [
-        Padding(
-          padding: const EdgeInsets.all(20),
-          child: Row(
+  // Add this method to handle reconnection
+  Future<void> _requestReconnection(Map<String, dynamic> connection) async {
+    try {
+      final currentUserId =
+          ref.read(authControllerProvider.notifier).currentUserId;
+      if (currentUserId == null) return;
+
+      final result = await CoupleCodeService.instance.requestReconnection(
+        connection['userEmail'],
+        connection['id'],
+        currentUserId,
+      );
+
+      if (result.isSuccess) {
+        _showSuccessMessage(result.message);
+      } else {
+        _showErrorMessage(result.message);
+      }
+    } catch (e) {
+      _showErrorMessage('Failed to request reconnection: $e');
+    }
+  }
+
+  // Add this method to delete connection history
+  Future<void> _deleteConnectionHistory(Map<String, dynamic> connection) async {
+    try {
+      await CoupleCodeService.instance.deleteConnectionHistory(
+        connection['userEmail'],
+        connection['id'],
+      );
+
+      _showSuccessMessage('Connection history deleted');
+      _loadConnectionHistory(); // Refresh the list
+    } catch (e) {
+      _showErrorMessage('Failed to delete connection: $e');
+    }
+  }
+
+  // Add this widget to build current couple code section
+  Widget _buildCurrentCoupleCodeSection(UserModel user) {
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: Colors.white.withOpacity(0.9),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: AppColors.primaryRose.withOpacity(0.3)),
+        boxShadow: [
+          BoxShadow(
+            color: AppColors.primaryDeepRose.withOpacity(0.1),
+            blurRadius: 15,
+            spreadRadius: 3,
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
             children: [
               Container(
                 padding: const EdgeInsets.all(10),
                 decoration: BoxDecoration(
-                  color: AppColors.accentDeepGold.withOpacity(0.2),
+                  color: AppColors.primaryRose.withOpacity(0.2),
                   borderRadius: BorderRadius.circular(10),
                 ),
                 child: const Icon(
-                  Icons.history,
-                  color: AppColors.accentDeepGold,
+                  Icons.favorite,
+                  color: AppColors.primaryDeepRose,
                   size: 20,
                 ),
               ),
               const SizedBox(width: 16),
               const Expanded(
                 child: Text(
-                  'Connection History',
+                  'Your Couple Code',
                   style: TextStyle(
                     fontSize: 18,
                     fontWeight: FontWeight.w600,
@@ -725,80 +671,251 @@ Widget _buildConnectionHistorySection() {
                   ),
                 ),
               ),
-              IconButton(
-                onPressed: _loadConnectionHistory,
-                icon: Icon(
-                  Icons.refresh,
-                  color: AppColors.accentDeepGold,
-                ),
-                tooltip: 'Refresh',
-              ),
             ],
           ),
-        ),
-        
-        if (_loadingHistory)
-          const Padding(
-            padding: EdgeInsets.all(20),
-            child: Center(child: CircularProgressIndicator()),
-          )
-        else if (_connectionHistory.isEmpty)
-          const Padding(
-            padding: EdgeInsets.all(20),
-            child: Text(
-              'No previous connections found',
-              style: TextStyle(
-                color: AppColors.textSecondary,
-              ),
-              textAlign: TextAlign.center,
-            ),
-          )
-        else
-          ListView.separated(
-            shrinkWrap: true,
-            physics: const NeverScrollableScrollPhysics(),
-            itemCount: _connectionHistory.length,
-            separatorBuilder: (context, index) => Divider(
-              height: 1,
-              color: AppColors.primaryRose.withOpacity(0.2),
-            ),
-            itemBuilder: (context, index) {
-              final connection = _connectionHistory[index];
-              return _buildConnectionHistoryItem(connection);
+
+          const SizedBox(height: 16),
+
+          // Show current couple code if user has one
+          FutureBuilder<String?>(
+            future: CoupleCodeService.instance.getUserCoupleCode(user.uid),
+            builder: (context, snapshot) {
+              if (snapshot.connectionState == ConnectionState.waiting) {
+                return const Center(child: CircularProgressIndicator());
+              }
+
+              final coupleCode = snapshot.data;
+              if (coupleCode != null && coupleCode.isNotEmpty) {
+                return Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      colors: [
+                        AppColors.primaryDeepRose.withOpacity(0.1),
+                        AppColors.secondaryDeepPurple.withOpacity(0.1),
+                      ],
+                    ),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(
+                      color: AppColors.primaryDeepRose.withOpacity(0.3),
+                    ),
+                  ),
+                  child: Column(
+                    children: [
+                      Text(
+                        CoupleCodeService.formatCodeForDisplay(coupleCode),
+                        style: const TextStyle(
+                          fontSize: 24,
+                          fontWeight: FontWeight.bold,
+                          color: AppColors.primaryDeepRose,
+                          letterSpacing: 2,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        user.isConnected
+                            ? 'Connected with ${user.partnerName ?? "your partner"}'
+                            : 'Share this code with your partner',
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: AppColors.textSecondary,
+                        ),
+                        textAlign: TextAlign.center,
+                      ),
+                      if (!user.isConnected) ...[
+                        const SizedBox(height: 12),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: ElevatedButton.icon(
+                                onPressed: () async {
+                                  await Clipboard.setData(
+                                    ClipboardData(text: coupleCode),
+                                  );
+                                  _showSuccessMessage(
+                                    'Code copied to clipboard!',
+                                  );
+                                },
+                                icon: const Icon(Icons.copy, size: 16),
+                                label: const Text('Copy'),
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: AppColors.primaryDeepRose,
+                                  foregroundColor: Colors.white,
+                                  padding: const EdgeInsets.symmetric(
+                                    vertical: 8,
+                                  ),
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(8),
+                                  ),
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: ElevatedButton.icon(
+                                onPressed: () async {
+                                  final shareText =
+                                      '''💕 Hey! Download OnlyUs and enter our couple code to connect:
+
+🔐 ${CoupleCodeService.formatCodeForDisplay(coupleCode)}
+
+OnlyUs - Just for the two of us ❤️''';
+                                  await Share.share(shareText);
+                                },
+                                icon: const Icon(Icons.share, size: 16),
+                                label: const Text('Share'),
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor:
+                                      AppColors.secondaryDeepPurple,
+                                  foregroundColor: Colors.white,
+                                  padding: const EdgeInsets.symmetric(
+                                    vertical: 8,
+                                  ),
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(8),
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ],
+                  ),
+                );
+              } else {
+                return Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: AppColors.primaryRose.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(
+                      color: AppColors.primaryRose.withOpacity(0.3),
+                    ),
+                  ),
+                  child: const Text(
+                    'No couple code yet. Generate one to connect with your partner.',
+                    style: TextStyle(color: AppColors.textSecondary),
+                    textAlign: TextAlign.center,
+                  ),
+                );
+              }
             },
           ),
-      ],
-    ),
-  );
-}
+        ],
+      ),
+    );
+  }
 
-// Add this widget to build individual connection history items
-Widget _buildConnectionHistoryItem(Map<String, dynamic> connection) {
+  // Add this widget to build connection history section
+  Widget _buildConnectionHistorySection() {
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.white.withOpacity(0.9),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: AppColors.primaryRose.withOpacity(0.3)),
+      ),
+      child: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.all(20),
+            child: Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: AppColors.accentDeepGold.withOpacity(0.2),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: const Icon(
+                    Icons.history,
+                    color: AppColors.accentDeepGold,
+                    size: 20,
+                  ),
+                ),
+                const SizedBox(width: 16),
+                const Expanded(
+                  child: Text(
+                    'Connection History',
+                    style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w600,
+                      color: AppColors.textPrimary,
+                    ),
+                  ),
+                ),
+                IconButton(
+                  onPressed: _loadConnectionHistory,
+                  icon: Icon(Icons.refresh, color: AppColors.accentDeepGold),
+                  tooltip: 'Refresh',
+                ),
+              ],
+            ),
+          ),
+
+          if (_loadingHistory)
+            const Padding(
+              padding: EdgeInsets.all(20),
+              child: Center(child: CircularProgressIndicator()),
+            )
+          else if (_connectionHistory.isEmpty)
+            const Padding(
+              padding: EdgeInsets.all(20),
+              child: Text(
+                'No previous connections found',
+                style: TextStyle(color: AppColors.textSecondary),
+                textAlign: TextAlign.center,
+              ),
+            )
+          else
+            ListView.separated(
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              itemCount: _connectionHistory.length,
+              separatorBuilder:
+                  (context, index) => Divider(
+                    height: 1,
+                    color: AppColors.primaryRose.withOpacity(0.2),
+                  ),
+              itemBuilder: (context, index) {
+                final connection = _connectionHistory[index];
+                return _buildConnectionHistoryItem(connection);
+              },
+            ),
+        ],
+      ),
+    );
+  }
+
+  // Add this widget to build individual connection history items
+ Widget _buildConnectionHistoryItem(Map<String, dynamic> connection) {
   final partnerName = connection['partnerName'] as String? ?? 'Unknown';
   final coupleCode = connection['coupleCode'] as String? ?? '';
   final connectedAt = connection['connectedAt'] as Timestamp?;
   final canReconnect = connection['canReconnect'] as bool? ?? false;
   final isActive = connection['isActive'] as bool? ?? false;
-  
+
   return ListTile(
     contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
     leading: CircleAvatar(
       radius: 20,
       backgroundColor: AppColors.primaryRose.withOpacity(0.2),
-      backgroundImage: connection['partnerPhoto'] != null && 
-                      connection['partnerPhoto'].toString().isNotEmpty
-          ? NetworkImage(connection['partnerPhoto'])
-          : null,
-      child: connection['partnerPhoto'] == null || 
-             connection['partnerPhoto'].toString().isEmpty
-          ? Text(
-              partnerName.isNotEmpty ? partnerName[0].toUpperCase() : '?',
-              style: const TextStyle(
-                fontWeight: FontWeight.bold,
-                color: AppColors.primaryDeepRose,
-              ),
-            )
-          : null,
+      backgroundImage:
+          connection['partnerPhoto'] != null &&
+                  connection['partnerPhoto'].toString().isNotEmpty
+              ? NetworkImage(connection['partnerPhoto'])
+              : null,
+      child:
+          connection['partnerPhoto'] == null ||
+                  connection['partnerPhoto'].toString().isEmpty
+              ? Text(
+                partnerName.isNotEmpty ? partnerName[0].toUpperCase() : '?',
+                style: const TextStyle(
+                  fontWeight: FontWeight.bold,
+                  color: AppColors.primaryDeepRose,
+                ),
+              )
+              : null,
     ),
     title: Text(
       partnerName,
@@ -821,10 +938,7 @@ Widget _buildConnectionHistoryItem(Map<String, dynamic> connection) {
         if (connectedAt != null)
           Text(
             'Connected: ${_formatDate(connectedAt.toDate())}',
-            style: const TextStyle(
-              fontSize: 11,
-              color: AppColors.textLight,
-            ),
+            style: const TextStyle(fontSize: 11, color: AppColors.textLight),
           ),
       ],
     ),
@@ -847,66 +961,72 @@ Widget _buildConnectionHistoryItem(Map<String, dynamic> connection) {
   );
 }
 
-// Add these dialog methods
-void _showReconnectDialog(Map<String, dynamic> connection) {
-  showDialog(
-    context: context,
-    builder: (context) => AlertDialog(
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-      title: const Text('Reconnect with Partner'),
-      content: Text(
-        'Send a reconnection request to ${connection['partnerName']}?\n\nThey will need to accept the request to restore your chat history.',
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(context),
-          child: const Text('Cancel'),
-        ),
-        ElevatedButton(
-          onPressed: () {
-            Navigator.pop(context);
-            _requestReconnection(connection);
-          },
-          style: ElevatedButton.styleFrom(
-            backgroundColor: AppColors.primaryDeepRose,
-            foregroundColor: Colors.white,
+  // Add these dialog methods
+  void _showReconnectDialog(Map<String, dynamic> connection) {
+    showDialog(
+      context: context,
+      builder:
+          (context) => AlertDialog(
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(16),
+            ),
+            title: const Text('Reconnect with Partner'),
+            content: Text(
+              'Send a reconnection request to ${connection['partnerName']}?\n\nThey will need to accept the request to restore your chat history.',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('Cancel'),
+              ),
+              ElevatedButton(
+                onPressed: () {
+                  Navigator.pop(context);
+                  _requestReconnection(connection);
+                },
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppColors.primaryDeepRose,
+                  foregroundColor: Colors.white,
+                ),
+                child: const Text('Send Request'),
+              ),
+            ],
           ),
-          child: const Text('Send Request'),
-        ),
-      ],
-    ),
-  );
-}
+    );
+  }
 
-void _showDeleteHistoryDialog(Map<String, dynamic> connection) {
-  showDialog(
-    context: context,
-    builder: (context) => AlertDialog(
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-      title: const Text('Delete Connection History'),
-      content: Text(
-        'Are you sure you want to delete your connection history with ${connection['partnerName']}?\n\nThis cannot be undone.',
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(context),
-          child: const Text('Cancel'),
-        ),
-        ElevatedButton(
-          onPressed: () {
-            Navigator.pop(context);
-            _deleteConnectionHistory(connection);
-          },
-          style: ElevatedButton.styleFrom(
-            backgroundColor: Colors.red,
-            foregroundColor: Colors.white,
+  void _showDeleteHistoryDialog(Map<String, dynamic> connection) {
+    showDialog(
+      context: context,
+      builder:
+          (context) => AlertDialog(
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(16),
+            ),
+            title: const Text('Delete Connection History'),
+            content: Text(
+              'Are you sure you want to delete your connection history with ${connection['partnerName']}?\n\nThis cannot be undone.',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('Cancel'),
+              ),
+              ElevatedButton(
+                onPressed: () {
+                  Navigator.pop(context);
+                  _deleteConnectionHistory(connection);
+                },
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.red,
+                  foregroundColor: Colors.white,
+                ),
+                child: const Text('Delete'),
+              ),
+            ],
           ),
-          child: const Text('Delete'),
-        ),
-      ],
-    ),
-  );
-}
+    );
+  }
   // UPDATED: ProfileScreen build method with real-time status
 
   @override
@@ -914,7 +1034,7 @@ void _showDeleteHistoryDialog(Map<String, dynamic> connection) {
     final authState = ref.watch(authControllerProvider);
 
     // FIXED: Use real-time current user provider for profile
-    final currentUser = ref.watch(realTimeCurrentUserProvider);
+    final currentUser = ref.watch(optimizedCurrentUserProvider);
 
     return Scaffold(
       extendBodyBehindAppBar: true,
@@ -1035,14 +1155,13 @@ void _showDeleteHistoryDialog(Map<String, dynamic> connection) {
 
           const SizedBox(height: 24),
 
+          // Current couple code section
+          _buildCurrentCoupleCodeSection(user),
 
-// Current couple code section
-_buildCurrentCoupleCodeSection(user),
+          const SizedBox(height: 24),
 
-const SizedBox(height: 24),
-
-// Connection history section
-_buildConnectionHistorySection(),
+          // Connection history section
+          _buildConnectionHistorySection(),
 
           const SizedBox(height: 24),
 
@@ -1375,8 +1494,7 @@ _buildConnectionHistorySection(),
             title: AppStrings.notificationSettings,
             trailing: Switch(
               value: _notificationsEnabled,
-              onChanged:
-                  (value) => setState(() => _notificationsEnabled = value),
+              onChanged: _updateNotificationSettings, // Updated callback
               activeColor: AppColors.primaryDeepRose,
             ),
             onTap: null,
@@ -1386,7 +1504,7 @@ _buildConnectionHistorySection(),
             title: AppStrings.soundEnabled,
             trailing: Switch(
               value: _soundEnabled,
-              onChanged: (value) => setState(() => _soundEnabled = value),
+              onChanged: _updateSoundSettings, // Updated callback
               activeColor: AppColors.primaryDeepRose,
             ),
             onTap: null,
@@ -1396,7 +1514,7 @@ _buildConnectionHistorySection(),
             title: AppStrings.vibrationEnabled,
             trailing: Switch(
               value: _vibrationEnabled,
-              onChanged: (value) => setState(() => _vibrationEnabled = value),
+              onChanged: _updateVibrationSettings, // Updated callback
               activeColor: AppColors.primaryDeepRose,
             ),
             onTap: null,
@@ -1449,20 +1567,20 @@ _buildConnectionHistorySection(),
             onTap: _showAboutDialog,
             showDivider: false,
           ),
-          // Add this as a new tile in _buildPrivacySettings after the existing tiles:
 
-_SettingsTile(
-  icon: Icons.link,
-  title: 'Reconnection Requests',
-  onTap: () {
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (context) => const ReconnectionRequestsScreen(),
-      ),
-    );
-  },
-),
+          // Add this as a new tile in _buildPrivacySettings after the existing tiles:
+          _SettingsTile(
+            icon: Icons.link,
+            title: 'Reconnection Requests',
+            onTap: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => const ReconnectionRequestsScreen(),
+                ),
+              );
+            },
+          ),
         ],
       ),
     );
@@ -1625,23 +1743,27 @@ _SettingsTile(
     );
   }
 
-  String _formatDate(DateTime date) {
-    const months = [
-      'Jan',
-      'Feb',
-      'Mar',
-      'Apr',
-      'May',
-      'Jun',
-      'Jul',
-      'Aug',
-      'Sep',
-      'Oct',
-      'Nov',
-      'Dec',
-    ];
-    return '${months[date.month - 1]} ${date.day}, ${date.year}';
+ String _formatDate(DateTime? date) {
+  if (date == null) {
+    return 'Not available';
   }
+  
+  const months = [
+    'Jan',
+    'Feb',
+    'Mar',
+    'Apr',
+    'May',
+    'Jun',
+    'Jul',
+    'Aug',
+    'Sep',
+    'Oct',
+    'Nov',
+    'Dec',
+  ];
+  return '${months[date.month - 1]} ${date.day}, ${date.year}';
+}
 }
 
 class _ImageSourceTile extends StatelessWidget {

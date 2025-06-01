@@ -30,28 +30,36 @@ class ChatModel {
   // Create ChatModel from Firestore document
   factory ChatModel.fromFirestore(DocumentSnapshot<Map<String, dynamic>> doc) {
     final data = doc.data()!;
-    
+
     return ChatModel(
       chatId: data['chatId'] ?? doc.id,
       participants: List<String>.from(data['participants'] ?? []),
-      participantNames: Map<String, String>.from(data['participantNames'] ?? {}),
-      participantPhotos: Map<String, String>.from(data['participantPhotos'] ?? {}),
+      participantNames: Map<String, String>.from(
+        data['participantNames'] ?? {},
+      ),
+      participantPhotos: Map<String, String>.from(
+        data['participantPhotos'] ?? {},
+      ),
       lastMessage: data['lastMessage'] ?? '',
-      lastMessageTime: data['lastMessageTime'] != null
-          ? (data['lastMessageTime'] as Timestamp).toDate()
-          : null,
+      lastMessageTime:
+          data['lastMessageTime'] != null
+              ? (data['lastMessageTime'] as Timestamp).toDate()
+              : null,
       lastMessageSender: data['lastMessageSender'] ?? '',
       typingUsers: Map<String, bool>.from(data['typingUsers'] ?? {}),
       unreadCounts: Map<String, int>.from(
-        (data['unreadCounts'] as Map<String, dynamic>? ?? {})
-            .map((key, value) => MapEntry(key, value as int? ?? 0)),
+        (data['unreadCounts'] as Map<String, dynamic>? ?? {}).map(
+          (key, value) => MapEntry(key, value as int? ?? 0),
+        ),
       ),
-      createdAt: data['createdAt'] != null
-          ? (data['createdAt'] as Timestamp).toDate()
-          : DateTime.now(),
-      updatedAt: data['updatedAt'] != null
-          ? (data['updatedAt'] as Timestamp).toDate()
-          : DateTime.now(),
+      createdAt:
+          data['createdAt'] != null
+              ? (data['createdAt'] as Timestamp).toDate()
+              : DateTime.now(),
+      updatedAt:
+          data['updatedAt'] != null
+              ? (data['updatedAt'] as Timestamp).toDate()
+              : DateTime.now(),
     );
   }
 
@@ -60,24 +68,32 @@ class ChatModel {
     return ChatModel(
       chatId: data['chatId'] ?? id,
       participants: List<String>.from(data['participants'] ?? []),
-      participantNames: Map<String, String>.from(data['participantNames'] ?? {}),
-      participantPhotos: Map<String, String>.from(data['participantPhotos'] ?? {}),
+      participantNames: Map<String, String>.from(
+        data['participantNames'] ?? {},
+      ),
+      participantPhotos: Map<String, String>.from(
+        data['participantPhotos'] ?? {},
+      ),
       lastMessage: data['lastMessage'] ?? '',
-      lastMessageTime: data['lastMessageTime'] != null
-          ? (data['lastMessageTime'] as Timestamp).toDate()
-          : null,
+      lastMessageTime:
+          data['lastMessageTime'] != null
+              ? (data['lastMessageTime'] as Timestamp).toDate()
+              : null,
       lastMessageSender: data['lastMessageSender'] ?? '',
       typingUsers: Map<String, bool>.from(data['typingUsers'] ?? {}),
       unreadCounts: Map<String, int>.from(
-        (data['unreadCounts'] as Map<String, dynamic>? ?? {})
-            .map((key, value) => MapEntry(key, value as int? ?? 0)),
+        (data['unreadCounts'] as Map<String, dynamic>? ?? {}).map(
+          (key, value) => MapEntry(key, value as int? ?? 0),
+        ),
       ),
-      createdAt: data['createdAt'] != null
-          ? (data['createdAt'] as Timestamp).toDate()
-          : DateTime.now(),
-      updatedAt: data['updatedAt'] != null
-          ? (data['updatedAt'] as Timestamp).toDate()
-          : DateTime.now(),
+      createdAt:
+          data['createdAt'] != null
+              ? (data['createdAt'] as Timestamp).toDate()
+              : DateTime.now(),
+      updatedAt:
+          data['updatedAt'] != null
+              ? (data['updatedAt'] as Timestamp).toDate()
+              : DateTime.now(),
     );
   }
 
@@ -89,9 +105,8 @@ class ChatModel {
       'participantNames': participantNames,
       'participantPhotos': participantPhotos,
       'lastMessage': lastMessage,
-      'lastMessageTime': lastMessageTime != null 
-          ? Timestamp.fromDate(lastMessageTime!) 
-          : null,
+      'lastMessageTime':
+          lastMessageTime != null ? Timestamp.fromDate(lastMessageTime!) : null,
       'lastMessageSender': lastMessageSender,
       'typingUsers': typingUsers,
       'unreadCounts': unreadCounts,
@@ -126,6 +141,55 @@ class ChatModel {
       unreadCounts: unreadCounts ?? this.unreadCounts,
       createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? this.updatedAt,
+    );
+  }
+
+  // Add this cache-safe toMap method to your ChatModel class
+
+  // Convert to Map for caching (with milliseconds instead of Timestamp)
+  Map<String, dynamic> toCacheMap() {
+    return {
+      'chatId': chatId,
+      'participants': participants,
+      'participantNames': participantNames,
+      'participantPhotos': participantPhotos,
+      'lastMessage': lastMessage,
+      'lastMessageTime': lastMessageTime?.millisecondsSinceEpoch,
+      'lastMessageSender': lastMessageSender,
+      'typingUsers': typingUsers,
+      'unreadCounts': unreadCounts,
+      'createdAt': createdAt.millisecondsSinceEpoch,
+      'updatedAt': updatedAt.millisecondsSinceEpoch,
+    };
+  }
+
+  // Factory constructor for creating from cached data
+  factory ChatModel.fromCacheMap(Map<String, dynamic> data) {
+    return ChatModel(
+      chatId: data['chatId'] ?? '',
+      participants: List<String>.from(data['participants'] ?? []),
+      participantNames: Map<String, String>.from(
+        data['participantNames'] ?? {},
+      ),
+      participantPhotos: Map<String, String>.from(
+        data['participantPhotos'] ?? {},
+      ),
+      lastMessage: data['lastMessage'] ?? '',
+      lastMessageTime:
+          data['lastMessageTime'] != null
+              ? DateTime.fromMillisecondsSinceEpoch(data['lastMessageTime'])
+              : null,
+      lastMessageSender: data['lastMessageSender'] ?? '',
+      typingUsers: Map<String, bool>.from(data['typingUsers'] ?? {}),
+      unreadCounts: Map<String, int>.from(data['unreadCounts'] ?? {}),
+      createdAt:
+          data['createdAt'] != null
+              ? DateTime.fromMillisecondsSinceEpoch(data['createdAt'])
+              : DateTime.now(),
+      updatedAt:
+          data['updatedAt'] != null
+              ? DateTime.fromMillisecondsSinceEpoch(data['updatedAt'])
+              : DateTime.now(),
     );
   }
 
@@ -169,7 +233,7 @@ class ChatModel {
   // Get formatted last message time
   String get formattedLastMessageTime {
     if (lastMessageTime == null) return '';
-    
+
     final now = DateTime.now();
     final today = DateTime(now.year, now.month, now.day);
     final messageDate = DateTime(
@@ -177,7 +241,7 @@ class ChatModel {
       lastMessageTime!.month,
       lastMessageTime!.day,
     );
-    
+
     if (messageDate == today) {
       // Today: show time only
       final hour = lastMessageTime!.hour;
@@ -203,12 +267,12 @@ class ChatModel {
   // Get display text for last message
   String get displayLastMessage {
     if (lastMessage.isEmpty) return 'No messages yet';
-    
+
     // Truncate long messages
     if (lastMessage.length > 50) {
       return '${lastMessage.substring(0, 50)}...';
     }
-    
+
     return lastMessage;
   }
 
@@ -228,9 +292,9 @@ class ChatModel {
   // Get typing status text
   String getTypingStatusText(String currentUserId) {
     final otherTypingUsers = getOtherTypingUsers(currentUserId);
-    
+
     if (otherTypingUsers.isEmpty) return '';
-    
+
     if (otherTypingUsers.length == 1) {
       final userId = otherTypingUsers.first;
       final name = participantNames[userId] ?? 'Someone';
@@ -243,10 +307,10 @@ class ChatModel {
   // Check if chat is active (has recent activity)
   bool get isActive {
     if (lastMessageTime == null) return false;
-    
+
     final now = DateTime.now();
     final difference = now.difference(lastMessageTime!);
-    
+
     // Consider active if last message was within 7 days
     return difference.inDays <= 7;
   }
@@ -271,8 +335,11 @@ class ChatModel {
   // Get chat summary for display
   String getChatSummary(String currentUserId) {
     final partner = getPartnerName(currentUserId);
-    final messageCount = unreadCounts.values.fold<int>(0, (sum, count) => sum + count);
-    
+    final messageCount = unreadCounts.values.fold<int>(
+      0,
+      (sum, count) => sum + count,
+    );
+
     if (isNewChat) {
       return 'New chat with $partner';
     } else if (messageCount > 0) {

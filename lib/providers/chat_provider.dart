@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:onlyus/core/services/cache_service.dart';
 import '../core/services/chat_service.dart';
 import '../models/message_model.dart';
 import 'auth_provider.dart';
@@ -10,6 +11,46 @@ abstract class ChatState {}
 class ChatInitial extends ChatState {}
 
 class ChatLoading extends ChatState {}
+
+// ADD: New cached chat states
+abstract class CachedChatState {}
+
+class CachedChatInitial extends CachedChatState {}
+
+class CachedChatLoading extends CachedChatState {
+  final List<MessageModel> cachedMessages;
+  CachedChatLoading({this.cachedMessages = const []});
+}
+
+class CachedChatLoaded extends CachedChatState {
+  final List<MessageModel> messages;
+  final String chatId;
+  final bool isConnected;
+  final bool isFromCache;
+
+  CachedChatLoaded({
+    required this.messages,
+    required this.chatId,
+    this.isConnected = true,
+    this.isFromCache = false,
+  });
+
+  CachedChatLoaded copyWith({
+    List<MessageModel>? messages,
+    String? chatId,
+    bool? isConnected,
+    bool? isFromCache,
+  }) {
+    return CachedChatLoaded(
+      messages: messages ?? this.messages,
+      chatId: chatId ?? this.chatId,
+      isConnected: isConnected ?? this.isConnected,
+      isFromCache: isFromCache ?? this.isFromCache,
+    );
+  }
+}
+
+
 
 class ChatLoaded extends ChatState {
   final List<MessageModel> messages;
@@ -375,7 +416,7 @@ class ChatController extends StateNotifier<ChatState> {
 
   Future<void> markMessagesAsRead() async {
     try {
-      await _chatService.markMessagesAsRead(chatId: _currentChatId);
+      await _chatService.markMessagesAsReadEnhanced(chatId: _currentChatId);
     } catch (e) {
       print('❌ ChatController: Error marking messages as read: $e');
       // Don't throw here as it's not critical
@@ -458,6 +499,26 @@ final chatControllerProvider = StateNotifierProvider<ChatController, ChatState>(
   },
 );
 
+final cachedChatControllerProvider = StateNotifierProvider<CachedChatController, CachedChatState>(
+  (ref) {
+    return CachedChatController(
+      ChatService.instance, 
+      CacheService.instance,
+      ref,
+    );
+  },
+);
+// ADD: Helper provider to check data source
+final chatDataSourceProvider = Provider<String>((ref) {
+  final chatState = ref.watch(cachedChatControllerProvider);
+  
+  if (chatState is CachedChatLoaded) {
+    return chatState.isFromCache ? 'cache' : 'live';
+  }
+  
+  return 'unknown';
+});
+
 // Enhanced typing status provider with better real-time updates
 final typingStatusProvider = StreamProvider.family<bool, String>((ref, userId) {
   final chatController = ref.watch(chatControllerProvider.notifier);
@@ -529,3 +590,262 @@ final realTimeMessagesProvider =
 final chatServiceStatusProvider = Provider<Map<String, dynamic>>((ref) {
   return ChatService.instance.getServiceStatus();
 });
+
+
+
+
+class CachedChatSendingMessage extends CachedChatState {
+  final List<MessageModel> messages;
+  final String chatId;
+  final String pendingMessage;
+
+  CachedChatSendingMessage({
+    required this.messages,
+    required this.chatId,
+    required this.pendingMessage,
+  });
+}
+
+class CachedChatError extends CachedChatState {
+  final String message;
+  final List<MessageModel> cachedMessages;
+
+  CachedChatError(this.message, {this.cachedMessages = const []});
+}
+
+// ADD: Cached Chat Controller
+class CachedChatController extends StateNotifier<CachedChatState> {
+  final ChatService _chatService;
+  final CacheService _cacheService;
+  final Ref _ref;
+  
+  StreamSubscription<List<MessageModel>>? _messagesSubscription;
+  String? _currentChatId;
+  List<MessageModel> _lastKnownMessages = [];
+  bool _hasInitialCache = false;
+
+  CachedChatController(this._chatService, this._cacheService, this._ref) 
+      : super(CachedChatInitial()) {
+    _initialize();
+  }
+
+  Future<void> _initialize() async {
+    try {
+      // Step 1: Load cached messages immediately
+      await _loadCachedMessages();
+      
+      // Step 2: Initialize chat and setup real-time listeners
+      await _initializeChat();
+    } catch (e) {
+      print('❌ CachedChatController: Error initializing: $e');
+      state = CachedChatError(
+        'Failed to load chat',
+        cachedMessages: _lastKnownMessages,
+      );
+    }
+  }
+
+  Future<void> _loadCachedMessages() async {
+    try {
+      // Try to get chat ID from last session
+      final lastChatId = _chatService.activeChatId;
+      
+      if (lastChatId != null) {
+        final cachedMessages = _cacheService.getCachedMessages(lastChatId);
+        
+        if (cachedMessages.isNotEmpty) {
+          _lastKnownMessages = cachedMessages;
+          _currentChatId = lastChatId;
+          _hasInitialCache = true;
+          
+          state = CachedChatLoaded(
+            messages: cachedMessages,
+            chatId: lastChatId,
+            isConnected: false,
+            isFromCache: true,
+          );
+          
+          print('✅ Loaded ${cachedMessages.length} cached messages for instant UI');
+          return;
+        }
+      }
+      
+      state = CachedChatLoading();
+    } catch (e) {
+      print('❌ Error loading cached messages: $e');
+      state = CachedChatLoading();
+    }
+  }
+
+  Future<void> _initializeChat() async {
+    try {
+      final currentUserId = _ref.read(authControllerProvider.notifier).currentUserId;
+      if (currentUserId == null) {
+        state = CachedChatError('Please log in to continue');
+        return;
+      }
+
+      if (!_hasInitialCache) {
+        state = CachedChatLoading();
+      }
+
+      final chatId = await _chatService.initializeChatWithFallback();
+
+      if (chatId == null) {
+        if (_hasInitialCache) {
+          state = CachedChatLoaded(
+            messages: _lastKnownMessages,
+            chatId: _currentChatId ?? '',
+            isConnected: false,
+            isFromCache: true,
+          );
+        } else {
+          state = CachedChatLoaded(
+            messages: [],
+            chatId: '',
+            isConnected: false,
+          );
+        }
+        return;
+      }
+
+      _currentChatId = chatId;
+      await _setupMessageStream(chatId);
+    } catch (e) {
+      print('❌ CachedChatController: Error initializing chat: $e');
+      state = CachedChatLoaded(
+        messages: _lastKnownMessages,
+        chatId: _currentChatId ?? '',
+        isConnected: false,
+        isFromCache: true,
+      );
+    }
+  }
+
+  Future<void> _setupMessageStream(String chatId) async {
+    try {
+      await _messagesSubscription?.cancel();
+
+      _messagesSubscription = _chatService
+          .getMessagesStream(chatId: chatId)
+          .listen(
+            (messages) => _handleMessagesUpdate(messages, chatId),
+            onError: (error) => _handleStreamError(error, chatId),
+          );
+    } catch (e) {
+      print('❌ CachedChatController: Error setting up message stream: $e');
+    }
+  }
+
+  void _handleMessagesUpdate(List<MessageModel> messages, String chatId) {
+    try {
+      _lastKnownMessages = messages;
+      
+      final currentState = state;
+      
+      if (currentState is CachedChatSendingMessage) {
+        final messageTexts = messages
+            .map((m) => m.message.toLowerCase().trim())
+            .toList();
+        final pendingText = currentState.pendingMessage.toLowerCase().trim();
+
+        if (messageTexts.contains(pendingText)) {
+          state = CachedChatLoaded(
+            messages: messages,
+            chatId: chatId,
+            isConnected: true,
+            isFromCache: false,
+          );
+        } else {
+          state = CachedChatSendingMessage(
+            messages: messages,
+            chatId: chatId,
+            pendingMessage: currentState.pendingMessage,
+          );
+        }
+      } else {
+        state = CachedChatLoaded(
+          messages: messages,
+          chatId: chatId,
+          isConnected: true,
+          isFromCache: false,
+        );
+      }
+
+      // Cache messages asynchronously
+      _cacheMessagesAsync(chatId, messages);
+    } catch (e) {
+      print('❌ CachedChatController: Error handling messages update: $e');
+    }
+  }
+
+  void _handleStreamError(dynamic error, String chatId) {
+    print('❌ CachedChatController: Messages stream error: $error');
+
+    final cachedMessages = _cacheService.getCachedMessages(chatId);
+    
+    state = CachedChatLoaded(
+      messages: cachedMessages.isNotEmpty ? cachedMessages : _lastKnownMessages,
+      chatId: chatId,
+      isConnected: false,
+      isFromCache: true,
+    );
+  }
+
+  void _cacheMessagesAsync(String chatId, List<MessageModel> messages) {
+    Future.microtask(() async {
+      try {
+        await _cacheService.cacheMessages(chatId, messages);
+      } catch (e) {
+        print('❌ Error caching messages async: $e');
+      }
+    });
+  }
+
+  Future<void> sendMessage(String message) async {
+    if (message.trim().isEmpty) return;
+
+    try {
+      final currentState = state;
+      String chatId = _currentChatId ?? '';
+      List<MessageModel> currentMessages = _lastKnownMessages;
+
+      if (currentState is CachedChatLoaded) {
+        currentMessages = currentState.messages;
+        chatId = currentState.chatId;
+      }
+
+      // Show optimistic UI immediately
+      state = CachedChatSendingMessage(
+        messages: currentMessages,
+        chatId: chatId,
+        pendingMessage: message.trim(),
+      );
+
+      // Send message to server
+      final success = await _chatService.sendTextMessage(
+        message: message.trim(),
+        chatId: chatId.isNotEmpty ? chatId : null,
+      );
+
+      if (!success) {
+        state = CachedChatLoaded(
+          messages: currentMessages,
+          chatId: chatId,
+          isConnected: false,
+          isFromCache: false,
+        );
+        throw Exception('Failed to send message');
+      }
+    } catch (e) {
+      print('❌ CachedChatController: Error sending message: $e');
+      rethrow;
+    }
+  }
+
+  @override
+  void dispose() {
+    _messagesSubscription?.cancel();
+    super.dispose();
+  }
+}

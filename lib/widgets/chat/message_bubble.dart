@@ -1,19 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:onlyus/core/utils/date_utils.dart';
-import 'dart:math' as math;
-
-import '../../core/constants/app_colors.dart';
-import '../../core/constants/app_themes.dart';
 import '../../models/message_model.dart';
-import '../common/gradient_background.dart';
-import 'status_indicator.dart';
 
+// Updated MessageBubble with romantic status integration
 class MessageBubble extends StatefulWidget {
   final MessageModel message;
   final bool isMyMessage;
   final bool showAvatar;
-  final bool showReadStatus; // NEW: Added parameter for read status
+  final bool showReadStatus;
   final VoidCallback? onLongPress;
   final VoidCallback? onTap;
 
@@ -22,7 +17,7 @@ class MessageBubble extends StatefulWidget {
     required this.message,
     required this.isMyMessage,
     this.showAvatar = true,
-    this.showReadStatus = false, // NEW: Default value
+    this.showReadStatus = false,
     this.onLongPress,
     this.onTap,
   });
@@ -95,7 +90,7 @@ class _MessageBubbleState extends State<MessageBubble>
               children: [
                 // Partner avatar (left side)
                 if (!widget.isMyMessage && widget.showAvatar) ...[
-                  _buildAvatar(),
+                  _buildRomanticAvatar(),
                   const SizedBox(width: 8),
                 ] else if (!widget.isMyMessage && !widget.showAvatar) ...[
                   const SizedBox(width: 40), // Space for alignment
@@ -118,7 +113,7 @@ class _MessageBubbleState extends State<MessageBubble>
                         children: [
                           _buildMessageBubble(),
                           const SizedBox(height: 4),
-                          _buildMessageInfo(),
+                          _buildRomanticMessageInfo(),
                         ],
                       ),
                     ),
@@ -128,7 +123,7 @@ class _MessageBubbleState extends State<MessageBubble>
                 // My avatar (right side)
                 if (widget.isMyMessage && widget.showAvatar) ...[
                   const SizedBox(width: 8),
-                  _buildAvatar(),
+                  _buildRomanticAvatar(),
                 ] else if (widget.isMyMessage && !widget.showAvatar) ...[
                   const SizedBox(width: 40), // Space for alignment
                 ],
@@ -140,21 +135,23 @@ class _MessageBubbleState extends State<MessageBubble>
     );
   }
 
-  Widget _buildAvatar() {
+  Widget _buildRomanticAvatar() {
     return Container(
       width: 32,
       height: 32,
       decoration: BoxDecoration(
         shape: BoxShape.circle,
-        gradient:
-            widget.isMyMessage
-                ? AppColors.myMessageGradient
-                : AppColors.partnerMessageGradient,
+        gradient: LinearGradient(
+          colors:
+              widget.isMyMessage
+                  ? [const Color(0xFFFF8A95), const Color(0xFFFF6B7A)]
+                  : [const Color(0xFFCE93D8), const Color(0xFFBA68C8)],
+        ),
         boxShadow: [
           BoxShadow(
             color: (widget.isMyMessage
-                    ? AppColors.primaryDeepRose
-                    : AppColors.secondaryDeepPurple)
+                    ? const Color(0xFFFF8A95)
+                    : const Color(0xFFCE93D8))
                 .withOpacity(0.3),
             blurRadius: 8,
             offset: const Offset(0, 2),
@@ -166,20 +163,35 @@ class _MessageBubbleState extends State<MessageBubble>
   }
 
   Widget _buildMessageBubble() {
-    return MessageBubbleGradient(
-      isMyMessage: widget.isMyMessage,
-      borderRadius: _getBorderRadius(),
-      child: Container(
-        padding: _getPadding(),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            if (widget.message.type == MessageType.image)
-              _buildImageContent()
-            else
-              _buildTextContent(),
-          ],
+    return Container(
+      padding: _getPadding(),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          colors:
+              widget.isMyMessage
+                  ? [const Color(0xFFFF8A95), const Color(0xFFFF6B7A)]
+                  : [const Color(0xFFCE93D8), const Color(0xFFBA68C8)],
         ),
+        borderRadius: _getBorderRadius(),
+        boxShadow: [
+          BoxShadow(
+            color: (widget.isMyMessage
+                    ? const Color(0xFFFF8A95)
+                    : const Color(0xFFCE93D8))
+                .withOpacity(0.3),
+            blurRadius: 8,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (widget.message.type == MessageType.image)
+            _buildImageContent()
+          else
+            _buildTextContent(),
+        ],
       ),
     );
   }
@@ -222,10 +234,11 @@ class _MessageBubbleState extends State<MessageBubble>
     final isOnlyEmojis = widget.message.isOnlyEmojis;
 
     return Text(
-      widget.message.message,
-      style: AppThemes.messageTextStyle.copyWith(
+      widget.message.messageContent,
+      style: TextStyle(
         fontSize: isOnlyEmojis ? 32 : 16,
         color: Colors.white,
+        fontWeight: FontWeight.w500,
       ),
     );
   }
@@ -290,7 +303,11 @@ class _MessageBubbleState extends State<MessageBubble>
                   ),
                   child: Text(
                     widget.message.message,
-                    style: AppThemes.messageTextStyle.copyWith(fontSize: 14),
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 14,
+                      fontWeight: FontWeight.w500,
+                    ),
                   ),
                 ),
               ),
@@ -300,8 +317,8 @@ class _MessageBubbleState extends State<MessageBubble>
     );
   }
 
-  // ENHANCED: Message info with optional read status
-  Widget _buildMessageInfo() {
+  // ENHANCED: Romantic message info with new status system
+  Widget _buildRomanticMessageInfo() {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 4),
       child: Row(
@@ -309,15 +326,20 @@ class _MessageBubbleState extends State<MessageBubble>
         children: [
           Text(
             AppDateUtils.formatMessageTime(widget.message.timestamp),
-            style: AppThemes.timestampTextStyle,
+            style: TextStyle(
+              fontSize: 11,
+              color: Colors.grey[600],
+              fontWeight: FontWeight.w400,
+            ),
           ),
 
-          // Show read status for own messages when enabled
+          // Show romantic status for own messages when enabled
           if (widget.isMyMessage && widget.showReadStatus) ...[
-            const SizedBox(width: 4),
-            StatusIndicator(
-              isDelivered: widget.message.isDelivered,
-              isRead: widget.message.isRead,
+            const SizedBox(width: 6),
+            RomanticStatusIndicator(
+              status: _getMessageStatus(),
+              size: 14,
+              showLabel: false,
               animate: true,
             ),
           ],
@@ -325,182 +347,378 @@ class _MessageBubbleState extends State<MessageBubble>
       ),
     );
   }
-}
 
-// Special message bubble for system messages
-class SystemMessageBubble extends StatelessWidget {
-  final String message;
-  final IconData? icon;
+  // Convert MessageModel status to RomanticStatus
+  MessageStatus _getMessageStatus() {
+    // Check if message is deleted first
+    if (widget.message.isDeleted == true) {
+      return MessageStatus.failed; // Shows as "Queued 🌙"
+    }
 
-  const SystemMessageBubble({super.key, required this.message, this.icon});
+    // For received messages (not my message), don't show status
+    if (!widget.isMyMessage) {
+      return MessageStatus.delivered;
+    }
 
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      margin: const EdgeInsets.symmetric(vertical: 8),
-      child: Center(
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-          decoration: BoxDecoration(
-            color: AppColors.textLight.withOpacity(0.2),
-            borderRadius: BorderRadius.circular(16),
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              if (icon != null) ...[
-                Icon(icon, size: 16, color: AppColors.textLight),
-                const SizedBox(width: 8),
-              ],
-              Text(
-                message,
-                style: AppThemes.timestampTextStyle.copyWith(
-                  color: AppColors.textLight,
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
+    // For sent messages by current user
+    if (!widget.message.isDelivered) {
+      return MessageStatus.sending; // Shows "💌" - still sending
+    }
+
+    // Check read status
+    if (widget.message.isRead) {
+      return MessageStatus.read; // Shows "💖" - read by partner
+    }
+
+    // Message is delivered but not read
+    return MessageStatus.delivered; // Shows "🌸" - delivered but not read
   }
 }
 
-// Date separator bubble
-class DateSeparatorBubble extends StatelessWidget {
-  final DateTime date;
+// Romantic Status Indicator Widget
+class RomanticStatusIndicator extends StatefulWidget {
+  final MessageStatus status;
+  final double size;
+  final bool animate;
+  final bool showLabel;
+  final TextStyle? labelStyle;
+  final Duration animationDuration;
 
-  const DateSeparatorBubble({super.key, required this.date});
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      margin: const EdgeInsets.symmetric(vertical: 16),
-      child: Center(
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-          decoration: BoxDecoration(
-            gradient: AppColors.buttonGradient,
-            borderRadius: BorderRadius.circular(20),
-            boxShadow: [
-              BoxShadow(
-                color: AppColors.primaryDeepRose.withOpacity(0.3),
-                blurRadius: 8,
-                offset: const Offset(0, 2),
-              ),
-            ],
-          ),
-          child: Text(
-            AppDateUtils.formatDateSeparator(date),
-            style: const TextStyle(
-              color: Colors.white,
-              fontSize: 12,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-// Animated message bubble for sending state
-class SendingMessageBubble extends StatefulWidget {
-  final String message;
-  final bool isMyMessage;
-
-  const SendingMessageBubble({
+  const RomanticStatusIndicator({
     super.key,
-    required this.message,
-    this.isMyMessage = true,
+    required this.status,
+    this.size = 16,
+    this.animate = true,
+    this.showLabel = true,
+    this.labelStyle,
+    this.animationDuration = const Duration(milliseconds: 800),
   });
 
   @override
-  State<SendingMessageBubble> createState() => _SendingMessageBubbleState();
+  State<RomanticStatusIndicator> createState() =>
+      _RomanticStatusIndicatorState();
 }
 
-class _SendingMessageBubbleState extends State<SendingMessageBubble>
-    with SingleTickerProviderStateMixin {
-  late AnimationController _controller;
-  late Animation<double> _opacityAnimation;
+class _RomanticStatusIndicatorState extends State<RomanticStatusIndicator>
+    with TickerProviderStateMixin {
+  late AnimationController _fadeController;
+  late AnimationController _scaleController;
+  late AnimationController _sparkleController;
+  late AnimationController _bloomController;
+
+  late Animation<double> _fadeAnimation;
+  late Animation<double> _scaleAnimation;
+  late Animation<double> _sparkleAnimation;
+  late Animation<double> _bloomAnimation;
 
   @override
   void initState() {
     super.initState();
+    _setupAnimations();
 
-    _controller = AnimationController(
-      duration: const Duration(milliseconds: 1000),
+    if (widget.animate) {
+      _startStatusAnimation();
+    }
+  }
+
+  void _setupAnimations() {
+    _fadeController = AnimationController(
+      duration: widget.animationDuration,
       vsync: this,
     );
 
-    _opacityAnimation = Tween<double>(
-      begin: 0.3,
-      end: 0.8,
-    ).animate(CurvedAnimation(parent: _controller, curve: Curves.easeInOut));
+    _scaleController = AnimationController(
+      duration: const Duration(milliseconds: 400),
+      vsync: this,
+    );
 
-    _controller.repeat(reverse: true);
+    _sparkleController = AnimationController(
+      duration: const Duration(milliseconds: 1500),
+      vsync: this,
+    );
+
+    _bloomController = AnimationController(
+      duration: const Duration(milliseconds: 600),
+      vsync: this,
+    );
+
+    _fadeAnimation = Tween<double>(begin: 0.0, end: 1.0).animate(
+      CurvedAnimation(parent: _fadeController, curve: Curves.easeInOut),
+    );
+
+    _scaleAnimation = Tween<double>(begin: 0.0, end: 1.0).animate(
+      CurvedAnimation(parent: _scaleController, curve: Curves.elasticOut),
+    );
+
+    _sparkleAnimation = Tween<double>(begin: 0.0, end: 1.0).animate(
+      CurvedAnimation(parent: _sparkleController, curve: Curves.easeInOut),
+    );
+
+    _bloomAnimation = Tween<double>(begin: 1.0, end: 1.3).animate(
+      CurvedAnimation(parent: _bloomController, curve: Curves.easeInOut),
+    );
+  }
+
+  void _startStatusAnimation() {
+    _fadeController.forward();
+
+    Future.delayed(const Duration(milliseconds: 100), () {
+      if (mounted) _scaleController.forward();
+    });
+
+    // Special animations for different statuses
+    switch (widget.status) {
+      case MessageStatus.read:
+        Future.delayed(const Duration(milliseconds: 300), () {
+          if (mounted) {
+            _sparkleController.repeat(reverse: true);
+            _bloomController.forward().then((_) => _bloomController.reverse());
+          }
+        });
+        break;
+      case MessageStatus.delivered:
+        Future.delayed(const Duration(milliseconds: 200), () {
+          if (mounted) {
+            _bloomController.forward().then((_) => _bloomController.reverse());
+          }
+        });
+        break;
+      default:
+        break;
+    }
+  }
+
+  @override
+  void didUpdateWidget(RomanticStatusIndicator oldWidget) {
+    super.didUpdateWidget(oldWidget);
+
+    if (oldWidget.status != widget.status && widget.animate) {
+      _restartAnimations();
+    }
+  }
+
+  void _restartAnimations() {
+    _fadeController.reset();
+    _scaleController.reset();
+    _sparkleController.reset();
+    _bloomController.reset();
+
+    _startStatusAnimation();
   }
 
   @override
   void dispose() {
-    _controller.dispose();
+    _fadeController.dispose();
+    _scaleController.dispose();
+    _sparkleController.dispose();
+    _bloomController.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      margin: const EdgeInsets.symmetric(vertical: 4),
-      child: Row(
-        mainAxisAlignment:
-            widget.isMyMessage
-                ? MainAxisAlignment.end
-                : MainAxisAlignment.start,
-        children: [
-          AnimatedBuilder(
-            animation: _opacityAnimation,
-            child: MessageBubbleGradient(
-              isMyMessage: widget.isMyMessage,
-              child: Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 16,
-                  vertical: 12,
-                ),
-                constraints: BoxConstraints(
-                  maxWidth: MediaQuery.of(context).size.width * 0.75,
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Flexible(
-                      child: Text(
-                        widget.message,
-                        style: AppThemes.messageTextStyle.copyWith(
-                          color: Colors.white.withOpacity(0.8),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    SizedBox(
-                      width: 12,
-                      height: 12,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2,
-                        valueColor: AlwaysStoppedAnimation<Color>(
-                          Colors.white.withOpacity(0.8),
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
+    return AnimatedBuilder(
+      animation: Listenable.merge([
+        _fadeAnimation,
+        _scaleAnimation,
+        _sparkleAnimation,
+        _bloomAnimation,
+      ]),
+      builder: (context, child) {
+        return FadeTransition(
+          opacity: _fadeAnimation,
+          child: Transform.scale(
+            scale: _scaleAnimation.value * _bloomAnimation.value,
+            child:
+                widget.showLabel ? _buildStatusWithLabel() : _buildStatusIcon(),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildStatusWithLabel() {
+    final statusInfo = _getStatusInfo();
+
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.center,
+      children: [
+        Stack(
+          clipBehavior: Clip.none,
+          children: [
+            _buildStatusIcon(),
+            if (widget.status == MessageStatus.read && widget.animate)
+              _buildSparkleEffect(),
+          ],
+        ),
+        const SizedBox(width: 4),
+        Text(
+          statusInfo.label,
+          style:
+              widget.labelStyle ??
+              TextStyle(
+                fontSize: 10,
+                color: statusInfo.color.withOpacity(0.8),
+                fontWeight: FontWeight.w500,
+                letterSpacing: 0.2,
               ),
-            ),
-            builder: (context, child) {
-              return Opacity(opacity: _opacityAnimation.value, child: child);
-            },
+        ),
+      ],
+    );
+  }
+
+  Widget _buildStatusIcon() {
+    final statusInfo = _getStatusInfo();
+
+    return Container(
+      width: widget.size,
+      height: widget.size,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        color: statusInfo.backgroundColor,
+        boxShadow: [
+          BoxShadow(
+            color: statusInfo.color.withOpacity(0.3),
+            blurRadius: 4,
+            spreadRadius: 1,
+            offset: const Offset(0, 1),
           ),
         ],
       ),
+      child: Center(
+        child: Text(
+          statusInfo.icon,
+          style: TextStyle(fontSize: widget.size * 0.7, height: 1.0),
+        ),
+      ),
     );
   }
+
+  Widget _buildSparkleEffect() {
+    return Positioned.fill(
+      child: AnimatedBuilder(
+        animation: _sparkleAnimation,
+        builder: (context, child) {
+          return CustomPaint(
+            painter: SparklePainter(
+              progress: _sparkleAnimation.value,
+              color: const Color(0xFFFFD700),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  StatusInfo _getStatusInfo() {
+    switch (widget.status) {
+      case MessageStatus.sending:
+        return StatusInfo(
+          icon: '💌',
+          label: 'Sending with 💌',
+          color: const Color(0xFFE1BEE7),
+          backgroundColor: const Color(0xFFF3E5F5),
+        );
+      case MessageStatus.sent:
+        return StatusInfo(
+          icon: '💌',
+          label: 'Sent with 💌',
+          color: const Color(0xFFCE93D8),
+          backgroundColor: const Color(0xFFF3E5F5),
+        );
+      case MessageStatus.delivered:
+        return StatusInfo(
+          icon: '🌸',
+          label: 'Delivered 🌸',
+          color: const Color(0xFFF8BBD9),
+          backgroundColor: const Color(0xFFFCE4EC),
+        );
+      case MessageStatus.read:
+        return StatusInfo(
+          icon: '💖',
+          label: 'Read with 💖',
+          color: const Color(0xFFFF8A95),
+          backgroundColor: const Color(0xFFFFEBEE),
+        );
+      case MessageStatus.failed:
+        return StatusInfo(
+          icon: '🌙',
+          label: 'Queued 🌙',
+          color: const Color(0xFFB0BEC5),
+          backgroundColor: const Color(0xFFECEFF1),
+        );
+    }
+  }
+}
+
+// Custom painter for sparkle effects
+class SparklePainter extends CustomPainter {
+  final double progress;
+  final Color color;
+
+  SparklePainter({required this.progress, required this.color});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint =
+        Paint()
+          ..color = color.withOpacity(0.8 * progress)
+          ..style = PaintingStyle.fill;
+
+    final center = Offset(size.width / 2, size.height / 2);
+    final sparklePositions = [
+      Offset(center.dx - 8, center.dy - 8),
+      Offset(center.dx + 8, center.dy - 8),
+      Offset(center.dx, center.dy + 10),
+    ];
+
+    for (int i = 0; i < sparklePositions.length; i++) {
+      final sparkleProgress = ((progress + (i * 0.3)) % 1.0);
+      final sparkleSize = 2.0 * sparkleProgress;
+
+      if (sparkleProgress > 0.1 && sparkleProgress < 0.9) {
+        _drawSparkle(canvas, paint, sparklePositions[i], sparkleSize);
+      }
+    }
+  }
+
+  void _drawSparkle(Canvas canvas, Paint paint, Offset position, double size) {
+    final path = Path();
+
+    // Create a simple star shape
+    path.moveTo(position.dx, position.dy - size);
+    path.lineTo(position.dx + size * 0.3, position.dy - size * 0.3);
+    path.lineTo(position.dx + size, position.dy);
+    path.lineTo(position.dx + size * 0.3, position.dy + size * 0.3);
+    path.lineTo(position.dx, position.dy + size);
+    path.lineTo(position.dx - size * 0.3, position.dy + size * 0.3);
+    path.lineTo(position.dx - size, position.dy);
+    path.lineTo(position.dx - size * 0.3, position.dy - size * 0.3);
+    path.close();
+
+    canvas.drawPath(path, paint);
+  }
+
+  @override
+  bool shouldRepaint(SparklePainter oldDelegate) {
+    return oldDelegate.progress != progress;
+  }
+}
+
+// Support classes
+enum MessageStatus { sending, sent, delivered, read, failed }
+
+class StatusInfo {
+  final String icon;
+  final String label;
+  final Color color;
+  final Color backgroundColor;
+
+  StatusInfo({
+    required this.icon,
+    required this.label,
+    required this.color,
+    required this.backgroundColor,
+  });
 }

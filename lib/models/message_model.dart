@@ -14,8 +14,10 @@ class MessageModel {
   final bool isDelivered;
   final DateTime? readAt;
   final MessageType type;
-  final bool? isDeleted; // ADD THIS FIELD
-  final DateTime? deletedAt; // ADD THIS FIELD (optional)
+  final bool? isDeleted;
+  final DateTime? deletedAt;
+  final bool isFavorited;
+  final List<String> favoritedBy;
 
   const MessageModel({
     required this.id,
@@ -29,11 +31,13 @@ class MessageModel {
     required this.isDelivered,
     this.readAt,
     required this.type,
-    this.isDeleted, // ADD THIS PARAMETER
-    this.deletedAt, // ADD THIS PARAMETER
+    this.isDeleted,
+    this.deletedAt,
+    this.isFavorited = false,
+    this.favoritedBy = const [],
   });
 
-  // UPDATED: Create MessageModel from Firestore document
+  // Create MessageModel from Firestore document
   factory MessageModel.fromFirestore(DocumentSnapshot<Map<String, dynamic>> doc) {
     final data = doc.data()!;
     return MessageModel(
@@ -52,36 +56,57 @@ class MessageModel {
           ? (data['readAt'] as Timestamp).toDate()
           : null,
       type: _parseMessageType(data['type']),
-      isDeleted: data['isDeleted'] ?? false, // ADD THIS LINE
-      deletedAt: data['deletedAt'] != null // ADD THIS LINE
+      isDeleted: data['isDeleted'] ?? false,
+      deletedAt: data['deletedAt'] != null
           ? (data['deletedAt'] as Timestamp).toDate()
           : null,
+      isFavorited: data['isFavorited'] ?? false,
+      favoritedBy: List<String>.from(data['favoritedBy'] ?? []),
     );
   }
 
-  // UPDATED: Create MessageModel from Map
+  // Create MessageModel from Map (used when loading from cache)
   factory MessageModel.fromMap(Map<String, dynamic> data, String id) {
-    return MessageModel(
-      id: id,
-      chatId: data['chatId'] ?? '',
-      message: data['message'] ?? '',
-      imageUrl: data['imageUrl'],
-      senderId: data['senderId'] ?? '',
-      senderName: data['senderName'] ?? 'Unknown',
-      timestamp: data['timestamp'] != null
-          ? (data['timestamp'] as Timestamp).toDate()
-          : DateTime.now(),
-      isRead: data['isRead'] ?? false,
-      isDelivered: data['isDelivered'] ?? false,
-      readAt: data['readAt'] != null
-          ? (data['readAt'] as Timestamp).toDate()
-          : null,
-      type: _parseMessageType(data['type']),
-      isDeleted: data['isDeleted'] ?? false, // ADD THIS LINE
-      deletedAt: data['deletedAt'] != null // ADD THIS LINE
-          ? (data['deletedAt'] as Timestamp).toDate()
-          : null,
-    );
+  return MessageModel(
+    id: id,
+    chatId: data['chatId'] ?? '',
+    message: data['message'] ?? '',
+    imageUrl: data['imageUrl'],
+    senderId: data['senderId'] ?? '',
+    senderName: data['senderName'] ?? 'Unknown',
+    timestamp: _parseTimestamp(data['timestamp']) ?? DateTime.now(),
+    isRead: data['isRead'] ?? false,
+    isDelivered: data['isDelivered'] ?? false,
+    readAt: _parseTimestamp(data['readAt']),
+    type: _parseMessageType(data['type']),
+    isDeleted: data['isDeleted'] ?? false,
+    deletedAt: _parseTimestamp(data['deletedAt']),
+    isFavorited: data['isFavorited'] ?? false,
+    favoritedBy: List<String>.from(data['favoritedBy'] ?? []),
+  );
+}
+
+// Add this helper method to MessageModel
+static DateTime? _parseTimestamp(dynamic timestamp) {
+  if (timestamp == null) return null;
+  
+  if (timestamp is Timestamp) {
+    return timestamp.toDate();
+  }
+  
+  if (timestamp is DateTime) {
+    return timestamp;
+  }
+  
+  if (timestamp is int) {
+    return DateTime.fromMillisecondsSinceEpoch(timestamp);
+  }
+  
+  return null;
+}
+  // Alternative constructor for creating from cache with string ID
+  factory MessageModel.fromCacheMap(Map<String, dynamic> data) {
+    return MessageModel.fromMap(data, data['id'] ?? '');
   }
 
   // Parse message type from string
@@ -97,8 +122,8 @@ class MessageModel {
     }
   }
 
-  // UPDATED: Convert MessageModel to Map for Firestore
-  Map<String, dynamic> toMap() {
+  // Convert to Map for Firestore (with Timestamp objects)
+  Map<String, dynamic> toFirestore() {
     return {
       'chatId': chatId,
       'message': message,
@@ -110,12 +135,35 @@ class MessageModel {
       'isDelivered': isDelivered,
       'readAt': readAt != null ? Timestamp.fromDate(readAt!) : null,
       'type': type.name,
-      'isDeleted': isDeleted ?? false, // ADD THIS LINE
-      'deletedAt': deletedAt != null ? Timestamp.fromDate(deletedAt!) : null, // ADD THIS LINE
+      'isDeleted': isDeleted ?? false,
+      'deletedAt': deletedAt != null ? Timestamp.fromDate(deletedAt!) : null,
+      'isFavorited': isFavorited,
+      'favoritedBy': favoritedBy,
     };
   }
 
-  // UPDATED: Create a copy with updated fields
+  // Convert to Map for caching (with milliseconds instead of Timestamp)
+ Map<String, dynamic> toMap() {
+  return {
+    'id': id,
+    'chatId': chatId,
+    'message': message,
+    'imageUrl': imageUrl,
+    'senderId': senderId,
+    'senderName': senderName,
+    'timestamp': timestamp.millisecondsSinceEpoch,
+    'isRead': isRead,
+    'isDelivered': isDelivered,
+    'readAt': readAt?.millisecondsSinceEpoch,
+    'type': type.name,
+    'isDeleted': isDeleted ?? false,
+    'deletedAt': deletedAt?.millisecondsSinceEpoch,
+    'isFavorited': isFavorited,
+    'favoritedBy': favoritedBy,
+  };
+}
+
+  // Create a copy with updated fields
   MessageModel copyWith({
     String? id,
     String? chatId,
@@ -128,8 +176,10 @@ class MessageModel {
     bool? isDelivered,
     DateTime? readAt,
     MessageType? type,
-    bool? isDeleted, // ADD THIS PARAMETER
-    DateTime? deletedAt, // ADD THIS PARAMETER
+    bool? isDeleted,
+    DateTime? deletedAt,
+    bool? isFavorited,
+    List<String>? favoritedBy,
   }) {
     return MessageModel(
       id: id ?? this.id,
@@ -143,8 +193,10 @@ class MessageModel {
       isDelivered: isDelivered ?? this.isDelivered,
       readAt: readAt ?? this.readAt,
       type: type ?? this.type,
-      isDeleted: isDeleted ?? this.isDeleted, // ADD THIS LINE
-      deletedAt: deletedAt ?? this.deletedAt, // ADD THIS LINE
+      isDeleted: isDeleted ?? this.isDeleted,
+      deletedAt: deletedAt ?? this.deletedAt,
+      isFavorited: isFavorited ?? this.isFavorited,
+      favoritedBy: favoritedBy ?? this.favoritedBy,
     );
   }
 
@@ -153,12 +205,12 @@ class MessageModel {
     return senderId == currentUserId;
   }
 
-  // NEW: Check if message is deleted
+  // Check if message is deleted
   bool get isMessageDeleted {
     return isDeleted == true;
   }
 
-  // UPDATED: Get display text for notifications (handle deleted messages)
+  // Get display text for notifications (handle deleted messages)
   String get displayText {
     if (isMessageDeleted) {
       return 'This message was deleted';
@@ -175,7 +227,7 @@ class MessageModel {
     }
   }
 
-  // UPDATED: Get message content (handle deleted messages)
+  // Get message content (handle deleted messages)
   String get messageContent {
     if (isMessageDeleted) {
       return 'This message was deleted';
@@ -283,7 +335,7 @@ class MessageModel {
         other.isRead == isRead &&
         other.isDelivered == isDelivered &&
         other.type == type &&
-        other.isDeleted == isDeleted; // ADD THIS LINE
+        other.isDeleted == isDeleted;
   }
 
   @override
@@ -297,6 +349,6 @@ class MessageModel {
         isRead.hashCode ^
         isDelivered.hashCode ^
         type.hashCode ^
-        (isDeleted?.hashCode ?? 0); // ADD THIS LINE
+        (isDeleted?.hashCode ?? 0);
   }
 }

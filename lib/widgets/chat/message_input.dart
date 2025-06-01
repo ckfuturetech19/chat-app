@@ -4,8 +4,6 @@ import 'dart:math' as math;
 
 import '../../core/constants/app_colors.dart';
 import '../../core/constants/app_strings.dart';
-import '../common/gradient_background.dart';
-import '../common/animated_heart.dart';
 
 class MessageInput extends StatefulWidget {
   final TextEditingController controller;
@@ -141,55 +139,69 @@ class _MessageInputState extends State<MessageInput>
     }
   }
 
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.95),
-        boxShadow: [
-          BoxShadow(
-            color: AppColors.primaryDeepRose.withOpacity(0.1),
-            blurRadius: 20,
-            offset: const Offset(0, -5),
-          ),
-        ],
-      ),
-      child: SafeArea(
-        child: AnimatedBuilder(
-          animation: _pulseAnimation,
-          builder: (context, child) {
-            return Transform.scale(
-              scale: _isFocused ? _pulseAnimation.value : 1.0,
-              child: _buildInputRow(),
-            );
-          },
+ @override
+Widget build(BuildContext context) {
+  return Container(
+    padding: const EdgeInsets.fromLTRB(12, 8, 12, 12), // Reduced padding
+    decoration: BoxDecoration(
+      color: Colors.white.withOpacity(0.95),
+      boxShadow: [
+        BoxShadow(
+          color: AppColors.primaryDeepRose.withOpacity(0.1),
+          blurRadius: 20,
+          offset: const Offset(0, -5),
         ),
+      ],
+    ),
+    child: SafeArea(
+      child: AnimatedBuilder(
+        animation: _pulseAnimation,
+        builder: (context, child) {
+          return Transform.scale(
+            scale: _isFocused ? _pulseAnimation.value : 1.0,
+            child: _buildInputRow(),
+          );
+        },
       ),
-    );
-  }
+    ),
+  );
+}
 
-  Widget _buildInputRow() {
-    return Row(
-      children: [
-        // Image button
-        if (widget.onImagePressed != null)
-          _buildImageButton(),
-        
-        const SizedBox(width: 12),
-        
-        // Text input field
-        Expanded(
+ Widget _buildInputRow() {
+  return Row(
+    crossAxisAlignment: CrossAxisAlignment.end,
+    children: [
+      // Image button
+      if (widget.onImagePressed != null)
+        Container(
+          margin: const EdgeInsets.only(bottom: 4),
+          child: _buildImageButton(),
+        ),
+      
+      if (widget.onImagePressed != null)
+        const SizedBox(width: 8), // Reduced spacing
+      
+      // Text input field
+      Expanded(
+        child: Container(
+          constraints: const BoxConstraints(
+            minHeight: 42, // Reduced height
+            maxHeight: 100,
+          ),
           child: _buildTextField(),
         ),
-        
-        const SizedBox(width: 12),
-        
-        // Send button
-        _buildSendButton(),
-      ],
-    );
-  }
+      ),
+      
+      const SizedBox(width: 8), // Reduced spacing
+      
+      // Send button
+      Container(
+        margin: const EdgeInsets.only(bottom: 4),
+        child: _buildSendButton(),
+      ),
+    ],
+  );
+}
 
   Widget _buildImageButton() {
     return GestureDetector(

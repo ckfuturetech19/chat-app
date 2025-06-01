@@ -1,6 +1,7 @@
 {
   "project_info": {
     "project_number": "251547780134",
+    "firebase_url": "https://onlyus-70c03-default-rtdb.asia-southeast1.firebasedatabase.app",
     "project_id": "onlyus-70c03",
     "storage_bucket": "onlyus-70c03.firebasestorage.app"
   },
@@ -13,6 +14,14 @@
         }
       },
       "oauth_client": [
+        {
+          "client_id": "251547780134-0jljpe1ai8qb0mq7sdt8bbtq6hg0uahc.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.example.onlyus",
+            "certificate_hash": "18ab6abc2df15a19cb6fc6826ee91c35bb1360ee"
+          }
+        },
         {
           "client_id": "251547780134-d2vk6b7c3ll3ma62r6bc1uvg7eu09pt7.apps.googleusercontent.com",
           "client_type": 3
